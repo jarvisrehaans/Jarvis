@@ -1,0 +1,508 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.drawerlayout.widget.DrawerLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/drawerLayout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_gradient_mesh">
+
+    <!-- MAIN SCREEN CONTENT -->
+    <FrameLayout
+        android:id="@+id/mainContentFrame"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <View
+            android:id="@+id/redOverlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@android:color/transparent"
+            android:visibility="gone"
+            android:alpha="0" />
+
+        <LinearLayout
+            android:id="@+id/classicHomeLayout"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical">
+
+            <!-- FLOATING TOP BAR (matte-black glass with metallic gold outline & ambient halo) -->
+            <FrameLayout
+                android:id="@+id/topBarCard"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:layout_marginStart="14dp"
+                android:layout_marginEnd="14dp"
+                android:background="@drawable/bg_top_header_panel">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:paddingStart="20dp"
+                    android:paddingEnd="12dp"
+                    android:paddingTop="12dp"
+                    android:paddingBottom="12dp">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+                        <TextView
+                            android:id="@+id/batteryText"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/text_primary"
+                            android:fontFamily="sans-serif-medium"
+                            android:textSize="12sp"
+                            android:text="100%" />
+                        <TextView
+                            android:id="@+id/ramText"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/text_tertiary"
+                            android:textSize="10sp"
+                            android:layout_marginTop="1dp"
+                            android:text="RAM 0%" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1.2"
+                        android:orientation="vertical"
+                        android:gravity="center">
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="JARVIS"
+                            android:textColor="@color/text_primary"
+                            android:textStyle="bold"
+                            android:fontFamily="sans-serif-black"
+                            android:letterSpacing="0.12"
+                            android:textSize="17sp" />
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="AI COMPANION"
+                            android:textColor="@color/text_tertiary"
+                            android:letterSpacing="0.18"
+                            android:textSize="9sp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="horizontal"
+                        android:gravity="end|center_vertical">
+                        <TextView
+                            android:id="@+id/timeText"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/text_primary"
+                            android:fontFamily="sans-serif-medium"
+                            android:textSize="12sp"
+                            android:layout_marginEnd="6dp"
+                            android:text="00:00" />
+
+                        <ImageButton
+                            android:id="@+id/settingsBtn"
+                            android:layout_width="38dp"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_settings_row"
+                            android:src="@drawable/ic_settings"
+                            android:padding="8dp"
+                            android:contentDescription="Settings" />
+                    </LinearLayout>
+                </LinearLayout>
+            </FrameLayout>
+
+            <!-- CENTER 3D ORB CONTAINER -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center">
+
+                <FrameLayout
+                    android:layout_width="290dp"
+                    android:layout_height="290dp"
+                    android:background="@android:color/transparent">
+
+                    <!-- ORB SKELETON LOADER (pulsing circle, hidden when WebView loads) -->
+                    <View
+                        android:id="@+id/orbSkeletonView"
+                        android:layout_width="180dp"
+                        android:layout_height="180dp"
+                        android:layout_gravity="center"
+                        android:background="@drawable/bg_skeleton_circle" />
+
+                    <WebView
+                        android:id="@+id/orbWebView"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:background="@android:color/transparent" />
+                </FrameLayout>
+            </LinearLayout>
+
+            <!-- BOTTOM SECTION -->
+            <LinearLayout
+                android:id="@+id/bottomSection"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingBottom="54dp">
+
+                <!-- CAMERA PREVIEW PIP OVERLAY (RIGHT SIDE DIRECTLY ABOVE STANDBY BAR) -->
+                <FrameLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content">
+
+                    <com.google.android.material.card.MaterialCardView
+                        android:id="@+id/cameraPreviewCard"
+                        android:layout_width="125dp"
+                        android:layout_height="165dp"
+                        android:layout_gravity="end"
+                        android:layout_marginEnd="20dp"
+                        android:layout_marginBottom="4dp"
+                        android:visibility="gone"
+                        app:cardBackgroundColor="#CC0A0A0A"
+                        app:cardCornerRadius="18dp"
+                        app:cardElevation="8dp"
+                        app:strokeColor="#FFB300"
+                        app:strokeWidth="1.5dp">
+
+                        <FrameLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="match_parent">
+
+                            <TextureView
+                                android:id="@+id/cameraTextureView"
+                                android:layout_width="match_parent"
+                                android:layout_height="match_parent" />
+
+                            <!-- CAMERA FLIP BUTTON -->
+                            <ImageButton
+                                android:id="@+id/cameraFlipBtn"
+                                android:layout_width="32dp"
+                                android:layout_height="32dp"
+                                android:layout_gravity="top|end"
+                                android:layout_margin="6dp"
+                                android:background="@drawable/bg_settings_row"
+                                android:src="@android:drawable/ic_menu_rotate"
+                                android:padding="6dp"
+                                android:contentDescription="Switch Camera Lens" />
+                        </FrameLayout>
+                    </com.google.android.material.card.MaterialCardView>
+                </FrameLayout>
+
+                <!-- STANDBY BAR HTML WEBVIEW -->
+                <FrameLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="160dp"
+                    android:layout_marginTop="0dp"
+                    android:layout_marginBottom="2dp">
+
+                    <!-- FOOTER SKELETON LOADER (pulsing bar, hidden when WebView loads) -->
+                    <View
+                        android:id="@+id/footerSkeletonView"
+                        android:layout_width="270dp"
+                        android:layout_height="46dp"
+                        android:layout_gravity="bottom|center_horizontal"
+                        android:layout_marginBottom="6dp"
+                        android:background="@drawable/bg_skeleton_bar" />
+
+                    <WebView
+                        android:id="@+id/standbyBarWebView"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:background="@android:color/transparent" />
+                </FrameLayout>
+
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- CYBER HUD WEBVIEW (NEW HOME SCREEN UI) -->
+        <WebView
+            android:id="@+id/cyberHudWebView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@android:color/transparent"
+            android:visibility="gone" />
+
+        <!-- FULL-SCREEN ERROR OVERLAY -->
+        <FrameLayout
+            android:id="@+id/errorOverlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#CC000000"
+            android:visibility="gone"
+            android:clickable="true"
+            android:focusable="true">
+
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:layout_marginStart="20dp"
+                android:layout_marginEnd="20dp"
+                android:layout_marginTop="80dp"
+                android:layout_marginBottom="80dp"
+                app:cardBackgroundColor="#F20C0C0C"
+                app:cardCornerRadius="20dp"
+                app:cardElevation="12dp"
+                app:strokeColor="#FF3B30"
+                app:strokeWidth="1.5dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="20dp">
+
+                    <!-- Error Header -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="12dp">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="⚠ ERROR"
+                            android:textColor="#FF3B30"
+                            android:textStyle="bold"
+                            android:fontFamily="sans-serif-black"
+                            android:letterSpacing="0.08"
+                            android:textSize="16sp" />
+
+                        <ImageButton
+                            android:id="@+id/dismissErrorBtn"
+                            android:layout_width="36dp"
+                            android:layout_height="36dp"
+                            android:background="@drawable/bg_settings_row"
+                            android:src="@drawable/ic_close"
+                            android:padding="8dp"
+                            android:contentDescription="Dismiss Error" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:background="#33FF3B30"
+                        android:layout_marginBottom="12dp" />
+
+                    <!-- Scrollable Error Detail -->
+                    <ScrollView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:maxHeight="360dp"
+                        android:fadeScrollbars="false">
+
+                        <TextView
+                            android:id="@+id/errorDetailText"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textColor="#FFCCCCCC"
+                            android:textSize="12sp"
+                            android:fontFamily="monospace"
+                            android:lineSpacingExtra="3dp"
+                            android:textIsSelectable="true"
+                            android:text="" />
+                    </ScrollView>
+
+                    <!-- Timestamp -->
+                    <TextView
+                        android:id="@+id/errorTimestamp"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="#66FFFFFF"
+                        android:textSize="10sp"
+                        android:layout_marginTop="8dp"
+                        android:text="" />
+
+                    <!-- Action Buttons -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="end"
+                        android:layout_marginTop="16dp">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/copyErrorBtn"
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="40dp"
+                            android:text="COPY"
+                            android:textColor="#FF3B30"
+                            android:textSize="12sp"
+                            android:layout_marginEnd="8dp"
+                            app:strokeColor="#33FF3B30"
+                            app:cornerRadius="12dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/dismissErrorBtn2"
+                            style="@style/Widget.MaterialComponents.Button"
+                            android:layout_width="wrap_content"
+                            android:layout_height="40dp"
+                            android:text="DISMISS"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp"
+                            android:backgroundTint="#FF3B30"
+                            app:cornerRadius="12dp" />
+                    </LinearLayout>
+
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+        </FrameLayout>
+    </FrameLayout>
+
+    <!-- SLIDING CHAT BOT DRAWER PANEL (SWIPE RIGHT TO OPEN) -->
+    <LinearLayout
+        android:id="@+id/chatDrawerPanel"
+        android:layout_width="320dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:background="#FA080808"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:clickable="true"
+        android:focusable="true">
+
+        <!-- CHAT DRAWER HEADER CONTROL BAR -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="12dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+                <TextView
+                    android:id="@+id/chatDrawerTitleText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="JARVIS CHAT BOT"
+                    android:textColor="@color/accent_primary"
+                    android:textStyle="bold"
+                    android:fontFamily="sans-serif-black"
+                    android:letterSpacing="0.1"
+                    android:textSize="16sp" />
+                <TextView
+                    android:id="@+id/chatDrawerSubtitleText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="HINGLISH HISTORY"
+                    android:textColor="@color/text_tertiary"
+                    android:textSize="10sp"
+                    android:letterSpacing="0.1" />
+            </LinearLayout>
+
+            <!-- GROUP CHAT TOGGLE ICON -->
+            <ImageButton
+                android:id="@+id/groupChatBtn"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:background="@drawable/bg_settings_row"
+                android:src="@drawable/ic_group_chat"
+                android:padding="7dp"
+                android:layout_marginEnd="8dp"
+                android:contentDescription="Group Chat" />
+
+            <ImageButton
+                android:id="@+id/clearHistoryBtn"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:background="@drawable/bg_settings_row"
+                android:src="@drawable/ic_delete"
+                android:padding="8dp"
+                android:layout_marginEnd="8dp"
+                android:contentDescription="Clear History" />
+
+            <ImageButton
+                android:id="@+id/closeDrawerBtn"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:background="@drawable/bg_settings_row"
+                android:src="@drawable/ic_close"
+                android:padding="8dp"
+                android:contentDescription="Close Drawer" />
+        </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#222222"
+            android:layout_marginBottom="12dp" />
+
+        <!-- CHAT RECYCLER VIEW (JARVIS BOT CHAT) -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/chatRecycler"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:clipToPadding="false"
+            android:overScrollMode="always" />
+
+        <!-- GROUP CHAT RECYCLER VIEW (HIDDEN BY DEFAULT) -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/groupChatRecycler"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:clipToPadding="false"
+            android:overScrollMode="always"
+            android:visibility="gone" />
+
+        <!-- INPUT TEXT FIELD + SEND BUTTON -->
+        <LinearLayout
+            android:id="@+id/chatInputContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_input_field"
+            android:padding="4dp">
+
+            <EditText
+                android:id="@+id/chatInput"
+                android:layout_width="0dp"
+                android:layout_height="44dp"
+                android:layout_weight="1"
+                android:background="@android:color/transparent"
+                android:hint="Type in Hinglish..."
+                android:textColorHint="@color/text_tertiary"
+                android:textColor="@color/text_primary"
+                android:textSize="14sp"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:inputType="textCapSentences|textMultiLine"
+                android:maxLines="3" />
+
+            <ImageButton
+                android:id="@+id/sendBtn"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="@drawable/bg_save_button"
+                android:src="@drawable/ic_send"
+                android:padding="10dp"
+                android:contentDescription="Send Message" />
+        </LinearLayout>
+    </LinearLayout>
+
+</androidx.drawerlayout.widget.DrawerLayout>

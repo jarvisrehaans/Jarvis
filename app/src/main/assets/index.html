@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>JARVIS 3D Orb</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: #000000;
+      overflow: hidden;
+    }
+    #orb-container {
+      position: fixed;
+      inset: 0;
+      cursor: grab;
+    }
+    #orb-container:active {
+      cursor: grabbing;
+    }
+    #orb-container canvas {
+      display: block;
+      width: 100% !important;
+      height: 100% !important;
+    }
+  </style>
+
+  <!-- Local Offline Three.js & Addon Dependencies -->
+  <script src="three.min.js"></script>
+  <script src="OrbitControls.js"></script>
+  <script src="CopyShader.js"></script>
+  <script src="LuminosityHighPassShader.js"></script>
+  <script src="EffectComposer.js"></script>
+  <script src="RenderPass.js"></script>
+  <script src="ShaderPass.js"></script>
+  <script src="UnrealBloomPass.js"></script>
+</head>
+<body>
+  <div id="orb-container"></div>
+
+  <script>
+    window.onerror = function(msg, url, line) {
+      console.log("Orb JS Error: " + msg + " at " + line);
+    };
+
+    const container = document.getElementById("orb-container");
+    const width = window.innerWidth || 300;
+    const height = window.innerHeight || 300;
+
+    const HOME_POSITION = new THREE.Vector3(0, 0.5, 5.5);
+    const MIN_DISTANCE = 0.6;
+    const MAX_DISTANCE = 40;
+
+    // ——— SCENE ———
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(55, width / height, 0.1, 500);
+    camera.position.copy(HOME_POSITION);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(width, height);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setClearColor(0x000000, 1.0);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 0.6;
+    container.appendChild(renderer.domElement);
+
+    // ——— THEME PALETTES ———
+    const PALETTES = {
+      blue: {
+        bright: 0x3b82f6,
+        mid: 0x2563eb,
+        dim: 0x1e3a8a,
+        faint: 0x0f225a,
+        hot: 0x60a5fa,
+        tint: new THREE.Vector3(0.6, 0.85, 1.3)
+      },
+      gold: {
+        bright: 0xf59e0b,
+        mid: 0xd97706,
+        dim: 0x78350f,
+        faint: 0x451e06,
+        hot: 0xfbbf24,
+        tint: new THREE.Vector3(1.2, 0.8, 0.4)
+      }
+    };
+
+    let activeThemeKey = 'blue';
+    let currentPalette = PALETTES.blue;
+    let C_BRIGHT = currentPalette.bright;
+    let C_MID = currentPalette.mid;
+    let C_DIM = currentPalette.dim;
+    let C_FAINT = currentPalette.faint;
+    let C_HOT = currentPalette.hot;
+
+    // ——— POST PROCESSING ———
+    const composer = new THREE.EffectComposer(renderer);
+    composer.addPass(new THREE.RenderPass(scene, camera));
+
+    const bloom = new THREE.UnrealBloomPass(
+      new THREE.Vector2(width, height),
+      0.8, // strength
+      0.4, // radius
+      0.35 // threshold
+    );
+    composer.addPass(bloom);
+
+    // Chromatic aberration shader
+    const chromaticShader = {
+      uniforms: {
+        tDiffuse: { value: null },
+        uTime: { value: 0 },
+        uIntensity: { value: 0.003 },
+        uTint: { value: currentPalette.tint },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D tDiffuse;
+        uniform float uTime;
+        uniform float uIntensity;
+        uniform vec3 uTint;
+        varying vec2 vUv;
+        void main() {
+          vec2 dir = vUv - vec2(0.5);
+          float d = length(dir);
+          float offset = uIntensity * d;
+          vec4 cr = texture2D(tDiffuse, vUv + dir * offset);
+          vec4 cg = texture2D(tDiffuse, vUv);
+          vec4 cb = texture2D(tDiffuse, vUv - dir * offset * 0.5);
+          gl_FragColor = vec4(cr.r, cg.g * 1.05, cb.b * 0.6, 1.0);
+          gl_FragColor.rgb = mix(gl_FragColor.rgb, gl_FragColor.rgb * uTint, 0.3);
+        }
+      `,
+    };
+    const chromaticPass = new THREE.ShaderPass(chromaticShader);
+    composer.addPass(chromaticPass);
+
+    // Controls
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.04;
+    controls.minDistance = MIN_DISTANCE;
+    controls.maxDistance = MAX_DISTANCE;
+    controls.zoomSpeed = 1.4;
+    controls.enablePan = false;
+
+    const orbGroup = new THREE.Group();
+    scene.add(orbGroup);
+
+    function lineMat(color, opacity = 1) {
+      return new THREE.LineBasicMaterial({
+        color,
+        transparent: true,
+        opacity,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+    }
+
+    function latRing(radius, lat, segs = 120) {
+      const r = radius * Math.cos(lat);
+      const y = radius * Math.sin(lat);
+      const pts = [];
+      for (let i = 0; i <= segs; i++) {
+        const a = (i / segs) * Math.PI * 2;
+        pts.push(new THREE.Vector3(r * Math.cos(a), y, r * Math.sin(a)));
+      }
+      return new THREE.BufferGeometry().setFromPoints(pts);
+    }
+
+    function meridian(radius, lon, segs = 120) {
+      const pts = [];
+      for (let i = 0; i <= segs; i++) {
+        const lat = (i / segs) * Math.PI - Math.PI / 2;
+        pts.push(
+          new THREE.Vector3(
+            radius * Math.cos(lat) * Math.cos(lon),
+            radius * Math.sin(lat),
+            radius * Math.cos(lat) * Math.sin(lon)
+          )
+        );
+      }
+      return new THREE.BufferGeometry().setFromPoints(pts);
+    }
+
+    // LAYER 1: OUTER SHELL
+    const outerShell = new THREE.Group();
+    const R1 = 2.0;
+
+    for (let i = -15; i <= 15; i++) {
+      const lat = (i / 15) * (Math.PI / 2) * 0.95;
+      const opacity = i % 3 === 0 ? 0.5 : 0.12;
+      const color = i % 3 === 0 ? C_MID : C_FAINT;
+      outerShell.add(new THREE.Line(latRing(R1, lat), lineMat(color, opacity)));
+    }
+
+    for (let i = 0; i < 24; i++) {
+      const lon = (i / 24) * Math.PI * 2;
+      const isMajor = i % 6 === 0;
+      outerShell.add(
+        new THREE.Line(
+          meridian(R1, lon),
+          lineMat(isMajor ? C_MID : C_FAINT, isMajor ? 0.6 : 0.1)
+        )
+      );
+    }
+
+    const CROSS_LINES = 18;
+    const CROSS_SPREAD = 0.25;
+    for (let i = 0; i < 4; i++) {
+      const lon = (i / 4) * Math.PI * 2;
+      for (let j = 0; j < CROSS_LINES; j++) {
+        const t = (j / (CROSS_LINES - 1)) * 2 - 1;
+        const offset = (t * CROSS_SPREAD) / 2;
+        const falloff = 1 - Math.abs(t) * 0.7;
+        const opacity = 0.85 * falloff;
+        const color = Math.abs(t) < 0.3 ? C_BRIGHT : C_MID;
+        outerShell.add(
+          new THREE.Line(meridian(R1, lon + offset, 200), lineMat(color, opacity))
+        );
+      }
+    }
+
+    const EQ_LINES = 20;
+    const EQ_SPREAD = 0.35;
+    for (let j = 0; j < EQ_LINES; j++) {
+      const t = (j / (EQ_LINES - 1)) * 2 - 1;
+      const offset = (t * EQ_SPREAD) / 2;
+      const falloff = 1 - Math.abs(t) * 0.65;
+      const opacity = 0.8 * falloff;
+      const color = Math.abs(t) < 0.3 ? C_BRIGHT : C_MID;
+      outerShell.add(
+        new THREE.Line(latRing(R1, offset, 200), lineMat(color, opacity))
+      );
+    }
+    orbGroup.add(outerShell);
+
+    // LAYER 2: GRID PANELS
+    const panelGroup = new THREE.Group();
+    function createSpherePanel(latCenter, lonCenter, latSpan, lonSpan, radius, divisions = 4) {
+      const group = new THREE.Group();
+      const mat = lineMat(C_DIM, 0.25);
+      for (let i = 0; i <= divisions; i++) {
+        const lat = latCenter - latSpan / 2 + (i / divisions) * latSpan;
+        const pts = [];
+        for (let j = 0; j <= divisions * 4; j++) {
+          const lon = lonCenter - lonSpan / 2 + (j / (divisions * 4)) * lonSpan;
+          pts.push(
+            new THREE.Vector3(
+              radius * Math.cos(lat) * Math.cos(lon),
+              radius * Math.sin(lat),
+              radius * Math.cos(lat) * Math.sin(lon)
+            )
+          );
+        }
+        group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+      }
+      for (let j = 0; j <= divisions; j++) {
+        const lon = lonCenter - lonSpan / 2 + (j / divisions) * lonSpan;
+        const pts = [];
+        for (let i = 0; i <= divisions * 4; i++) {
+          const lat = latCenter - latSpan / 2 + (i / (divisions * 4)) * latSpan;
+          pts.push(
+            new THREE.Vector3(
+              radius * Math.cos(lat) * Math.cos(lon),
+              radius * Math.sin(lat),
+              radius * Math.cos(lat) * Math.sin(lon)
+            )
+          );
+        }
+        group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+      }
+      return group;
+    }
+
+    const panelConfigs = [
+      { lat: 0.3, lon: 0.5, latS: 0.5, lonS: 0.7 },
+      { lat: -0.4, lon: 1.8, latS: 0.6, lonS: 0.8 },
+      { lat: 0.6, lon: 3.2, latS: 0.4, lonS: 0.6 },
+      { lat: -0.2, lon: 4.5, latS: 0.7, lonS: 0.9 },
+      { lat: 0.1, lon: 5.5, latS: 0.5, lonS: 0.5 },
+      { lat: -0.7, lon: 0.2, latS: 0.3, lonS: 0.8 },
+      { lat: 0.8, lon: 2.0, latS: 0.3, lonS: 0.7 },
+      { lat: -0.5, lon: 3.8, latS: 0.5, lonS: 0.6 },
+      { lat: 0.4, lon: 5.0, latS: 0.4, lonS: 0.8 },
+      { lat: -0.8, lon: 5.8, latS: 0.3, lonS: 0.5 },
+      { lat: 0.0, lon: 2.5, latS: 0.6, lonS: 0.5 },
+      { lat: 0.7, lon: 4.2, latS: 0.35, lonS: 0.65 },
+    ];
+
+    panelConfigs.forEach((cfg) => {
+      panelGroup.add(
+        createSpherePanel(cfg.lat, cfg.lon, cfg.latS, cfg.lonS, R1 + 0.01, 3)
+      );
+    });
+    orbGroup.add(panelGroup);
+
+    // LAYER 3: MIDDLE SHELL
+    const shell2 = new THREE.Group();
+    const R2 = 1.35;
+    for (let i = 0; i < 8; i++) {
+      const ring = new THREE.Group();
+      const radius = R2 * (0.6 + (i / 8) * 0.4);
+      const geo = latRing(radius, 0, 100);
+      const mat = lineMat(i % 2 === 0 ? C_BRIGHT : C_DIM, 0.45);
+      ring.add(new THREE.Line(geo, mat));
+      ring.rotation.x = Math.sin(i * 1.1) * 1.5;
+      ring.rotation.y = Math.cos(i * 0.9) * 1.5;
+      ring.rotation.z = (i / 8) * Math.PI;
+      shell2.add(ring);
+    }
+    for (let i = -8; i <= 8; i++) {
+      const lat = (i / 8) * (Math.PI / 2) * 0.85;
+      shell2.add(
+        new THREE.Line(latRing(R2, lat, 60), lineMat(C_FAINT, 0.18))
+      );
+    }
+    orbGroup.add(shell2);
+
+    // LAYER 4: INNER CORE
+    const innerCore = new THREE.Group();
+    const R3 = 0.75;
+    for (let i = 0; i < 40; i++) {
+      const pts = [];
+      const segs = 30 + Math.floor(Math.random() * 20);
+      const startLat = (Math.random() - 0.5) * Math.PI * 0.8;
+      const startLon = Math.random() * Math.PI * 2;
+      const length = 0.3 + Math.random() * 1.2;
+      for (let j = 0; j <= segs; j++) {
+        const frac = j / segs;
+        const lat = startLat + Math.sin(frac * Math.PI) * 0.2;
+        const lon = startLon + frac * length;
+        pts.push(
+          new THREE.Vector3(
+            R3 * Math.cos(lat) * Math.cos(lon),
+            R3 * Math.sin(lat),
+            R3 * Math.cos(lat) * Math.sin(lon)
+          )
+        );
+      }
+      innerCore.add(
+        new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints(pts),
+          lineMat(C_BRIGHT, 0.3 + Math.random() * 0.2)
+        )
+      );
+    }
+    for (let i = -6; i <= 6; i++) {
+      const lat = (i / 6) * (Math.PI / 2) * 0.9;
+      innerCore.add(new THREE.Line(latRing(R3, lat, 80), lineMat(C_DIM, 0.2)));
+    }
+    for (let i = 0; i < 12; i++) {
+      const lon = (i / 12) * Math.PI * 2;
+      innerCore.add(new THREE.Line(meridian(R3, lon, 80), lineMat(C_DIM, 0.15)));
+    }
+    orbGroup.add(innerCore);
+
+    // LAYER 5: INNERMOST CORE
+    const coreR = 0.25;
+    const icoGeo = new THREE.IcosahedronGeometry(coreR, 1);
+    const icoEdges = new THREE.EdgesGeometry(icoGeo);
+    const icoWireMat = lineMat(C_HOT, 0.9);
+    const icoWire = new THREE.LineSegments(icoEdges, icoWireMat);
+    orbGroup.add(icoWire);
+
+    const coreSphereMat = new THREE.MeshBasicMaterial({
+      color: C_HOT,
+      transparent: true,
+      opacity: 0.15,
+      blending: THREE.AdditiveBlending,
+    });
+    const coreSphere = new THREE.Mesh(new THREE.SphereGeometry(0.15, 16, 16), coreSphereMat);
+    orbGroup.add(coreSphere);
+
+    const glowSphereMat = new THREE.MeshBasicMaterial({
+      color: C_MID,
+      transparent: true,
+      opacity: 0.04,
+      blending: THREE.AdditiveBlending,
+    });
+    const glowSphere = new THREE.Mesh(new THREE.SphereGeometry(0.5, 16, 16), glowSphereMat);
+    orbGroup.add(glowSphere);
+
+    // 3D CODE TEXT SPRITES
+    const codeSnippets = [
+      "sys.init()", "0xFF3A", "malloc()", ">> SCAN", "void*", "ACK",
+      "SYNC OK", "ptr_ref", "exec()", "hash256", "::bind", "core.0",
+      "01101001", "10110100", ">>> RDY", "HEAP 4K", "TCP/SYN",
+      "mutex.lk", "IRQ 0x7", "DMA xfer", "REG EAX", "FAULT 0",
+      "kernel.d", "pipe |>", "chmod +x", "fork()", "SIGTERM",
+      "eth0: UP", "AES-256", "RSA 4096", "TLS 1.3", "HTTP/2",
+      "latency", "200 OK", "PATCH /", "fn main", "use std",
+      "impl Orb", "async {}", "spawn()", "arc::new", ".unwrap",
+    ];
+
+    function makeTextSprite(text, size) {
+      size = size || 0.08;
+      const c = document.createElement("canvas");
+      c.width = 256;
+      c.height = 32;
+      const ctx = c.getContext("2d");
+      ctx.font = "bold 14px Courier New";
+      const alpha = 0.35 + Math.random() * 0.55;
+      ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, 128, 16);
+      const tex = new THREE.CanvasTexture(c);
+      tex.minFilter = THREE.LinearFilter;
+      const s = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: tex,
+          color: C_BRIGHT,
+          transparent: true,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        })
+      );
+      s.scale.set(size * 5, size * 0.7, 1);
+      return s;
+    }
+
+    function scatterText(count, sizeFn, rFn, speedScale) {
+      const group = new THREE.Group();
+      for (let i = 0; i < count; i++) {
+        const sp = makeTextSprite(
+          codeSnippets[Math.floor(Math.random() * codeSnippets.length)],
+          sizeFn()
+        );
+        const phi = Math.acos(2 * Math.random() - 1);
+        const theta = Math.random() * Math.PI * 2;
+        const r = rFn();
+        sp.position.set(
+          r * Math.sin(phi) * Math.cos(theta),
+          r * Math.cos(phi),
+          r * Math.sin(phi) * Math.sin(theta)
+        );
+        sp.userData = {
+          phi,
+          theta,
+          r,
+          speed:
+            (speedScale[0] + Math.random() * speedScale[1]) *
+            (Math.random() > 0.5 ? 1 : -1),
+        };
+        group.add(sp);
+      }
+      return group;
+    }
+
+    const textOuter = scatterText(
+      1200,
+      function() { return 0.04 + Math.random() * 0.04; },
+      function() { return R1 + 0.03 + Math.random() * 0.08; },
+      [0.0002, 0.0008]
+    );
+    orbGroup.add(textOuter);
+
+    const textInner = scatterText(
+      100,
+      function() { return 0.03 + Math.random() * 0.03; },
+      function() { return R3 + 0.02; },
+      [0.0005, 0.001]
+    );
+    orbGroup.add(textInner);
+
+    const textAmbient = scatterText(
+      400,
+      function() { return 0.03; },
+      function() { return R3 + 0.2 + Math.random() * (R1 - R3 - 0.3); },
+      [0.0003, 0.0006]
+    );
+    orbGroup.add(textAmbient);
+
+    // SCANNING RINGS
+    function makeScanRing(radius, thickness) {
+      thickness = thickness || 0.015;
+      const geo = new THREE.RingGeometry(radius - thickness, radius + thickness, 120);
+      const mat = new THREE.MeshBasicMaterial({
+        color: C_BRIGHT,
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.rotation.x = Math.PI / 2;
+      return mesh;
+    }
+
+    const scanRing1 = makeScanRing(R1, 0.01);
+    const scanRing2 = makeScanRing(R1 * 0.7, 0.008);
+    orbGroup.add(scanRing1, scanRing2);
+
+    // HEXAGONAL NODES
+    for (let i = 0; i < 15; i++) {
+      const phi = Math.acos(2 * Math.random() - 1);
+      const theta = Math.random() * Math.PI * 2;
+      const r = R1 + 0.02;
+      const hexGeo = new THREE.CircleGeometry(0.03 + Math.random() * 0.02, 6);
+      const hexEdges = new THREE.EdgesGeometry(hexGeo);
+      const hex = new THREE.LineSegments(hexEdges, lineMat(C_MID, 0.5));
+      hex.position.set(
+        r * Math.sin(phi) * Math.cos(theta),
+        r * Math.cos(phi),
+        r * Math.sin(phi) * Math.sin(theta)
+      );
+      hex.lookAt(0, 0, 0);
+      outerShell.add(hex);
+    }
+
+    // AUDIO REACTIVITY & EXPOSED KOTLIN JS INTERFACE
+    let userAudioLevel = 0;
+    let smoothedUserAudio = 0;
+    let currentOrbState = "IDLE";
+    let isOrbMuted = false;
+    let isOrbPowered = true;
+
+    window.setAudioLevel = function(level) {
+      userAudioLevel = Math.min(1.0, Math.max(0.0, level));
+    };
+
+    window.setOrbState = function(stateName, colorHex, muted, poweredOn) {
+      if (stateName) currentOrbState = stateName;
+      if (muted !== undefined) isOrbMuted = muted;
+      if (poweredOn !== undefined) isOrbPowered = poweredOn;
+    };
+
+    window.setAppTheme = function(themeName) {
+      const isGold = (themeName === 'gold');
+      activeThemeKey = isGold ? 'gold' : 'blue';
+      currentPalette = isGold ? PALETTES.gold : PALETTES.blue;
+      C_BRIGHT = currentPalette.bright;
+      C_MID = currentPalette.mid;
+      C_DIM = currentPalette.dim;
+      C_FAINT = currentPalette.faint;
+      C_HOT = currentPalette.hot;
+
+      if (chromaticPass && chromaticPass.uniforms && chromaticPass.uniforms.uTint) {
+        chromaticPass.uniforms.uTint.value = currentPalette.tint;
+      }
+      if (icoWireMat) icoWireMat.color.setHex(C_HOT);
+      if (coreSphereMat) coreSphereMat.color.setHex(C_HOT);
+      if (glowSphereMat) glowSphereMat.color.setHex(C_MID);
+      if (scanRing1 && scanRing1.material) scanRing1.material.color.setHex(C_BRIGHT);
+      if (scanRing2 && scanRing2.material) scanRing2.material.color.setHex(C_BRIGHT);
+
+      orbGroup.traverse(function(child) {
+        if (child.isSprite && child.material && child.material.color) {
+          child.material.color.setHex(C_BRIGHT);
+        }
+        if (child.isLine || child.isLineSegments || child.isMesh) {
+          if (child.material && child.material.color) {
+            const hex = child.material.color.getHex();
+            if (isGold) {
+              if (hex === PALETTES.blue.bright) child.material.color.setHex(PALETTES.gold.bright);
+              else if (hex === PALETTES.blue.mid) child.material.color.setHex(PALETTES.gold.mid);
+              else if (hex === PALETTES.blue.dim) child.material.color.setHex(PALETTES.gold.dim);
+              else if (hex === PALETTES.blue.faint) child.material.color.setHex(PALETTES.gold.faint);
+              else if (hex === PALETTES.blue.hot) child.material.color.setHex(PALETTES.gold.hot);
+            } else {
+              if (hex === PALETTES.gold.bright) child.material.color.setHex(PALETTES.blue.bright);
+              else if (hex === PALETTES.gold.mid) child.material.color.setHex(PALETTES.blue.mid);
+              else if (hex === PALETTES.gold.dim) child.material.color.setHex(PALETTES.blue.dim);
+              else if (hex === PALETTES.gold.faint) child.material.color.setHex(PALETTES.blue.faint);
+              else if (hex === PALETTES.gold.hot) child.material.color.setHex(PALETTES.blue.hot);
+            }
+          }
+        }
+      });
+    };
+
+    // ANIMATION LOOP
+    const clock = new THREE.Clock();
+    let flickerTimer = 0;
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const t = clock.getElapsedTime();
+
+      // Smooth audio level & state energy
+      smoothedUserAudio += (userAudioLevel - smoothedUserAudio) * 0.25;
+      const stateEnergyMult = (currentOrbState === "THINKING" || currentOrbState === "SPEAKING") ? 1.4 : 1.0;
+      const audioEnergy = (isOrbMuted || !isOrbPowered) ? 0 : smoothedUserAudio * 1.5 * stateEnergyMult;
+
+      const orbScale = (!isOrbPowered) ? 0.85 : (1 + audioEnergy * 0.28);
+      orbGroup.scale.setScalar(orbScale);
+
+      outerShell.rotation.y += 0.0015 + audioEnergy * 0.012;
+      outerShell.rotation.x = Math.sin(t * 0.08) * 0.05 + Math.sin(t * 10) * (audioEnergy * 0.02);
+
+      panelGroup.rotation.y += 0.0018 + audioEnergy * 0.01;
+      panelGroup.rotation.x = Math.sin(t * 0.08 + 0.5) * 0.04;
+
+      shell2.rotation.y -= 0.001 + audioEnergy * 0.008;
+      shell2.rotation.z = Math.sin(t * 0.12) * 0.03;
+
+      innerCore.rotation.y -= 0.005 + audioEnergy * 0.025;
+      innerCore.rotation.z += 0.002;
+      innerCore.rotation.x = Math.cos(t * 0.1) * 0.08;
+
+      icoWire.rotation.x += 0.008 + audioEnergy * 0.02;
+      icoWire.rotation.y += 0.012 + audioEnergy * 0.02;
+
+      const wave1 = Math.sin(t * 1.2);
+      const coreScale = 1 + wave1 * 0.05 + audioEnergy * 0.5;
+      coreSphere.scale.setScalar(coreScale);
+      coreSphereMat.opacity = 0.08 + wave1 * 0.02 + audioEnergy * 0.35;
+      glowSphere.scale.setScalar(1 + wave1 * 0.03 + audioEnergy * 0.6);
+      glowSphereMat.opacity = 0.03 + wave1 * 0.01 + audioEnergy * 0.25;
+      icoWire.scale.setScalar(1 + wave1 * 0.02 + audioEnergy * 0.4);
+
+      const driftGroups = [
+        [textOuter, 1],
+        [textInner, 2],
+        [textAmbient, 1.2],
+      ];
+      for (let g = 0; g < driftGroups.length; g++) {
+        const group = driftGroups[g][0];
+        const mult = driftGroups[g][1];
+        group.children.forEach(function(sp) {
+          const u = sp.userData;
+          u.theta += u.speed * mult * (1 + audioEnergy * 1.5);
+          sp.position.set(
+            u.r * Math.sin(u.phi) * Math.cos(u.theta),
+            u.r * Math.cos(u.phi),
+            u.r * Math.sin(u.phi) * Math.sin(u.theta)
+          );
+        });
+      }
+
+      const scanY1 = Math.sin(t * 0.4) * R1;
+      scanRing1.position.y = scanY1;
+      const scanS1 = Math.sqrt(Math.max(0, R1 * R1 - scanY1 * scanY1)) / R1;
+      scanRing1.scale.set(scanS1, scanS1, 1);
+      scanRing1.material.opacity = (0.2 + audioEnergy * 0.4) * scanS1;
+
+      const scanY2 = Math.sin(t * 0.6 + 2) * R3;
+      scanRing2.position.y = scanY2;
+      const scanS2 = Math.sqrt(Math.max(0, R3 * R3 - scanY2 * scanY2)) / R3;
+      scanRing2.scale.set(scanS2, scanS2, 1);
+      scanRing2.material.opacity = (0.15 + audioEnergy * 0.35) * scanS2;
+
+      flickerTimer += 0.016;
+      if (flickerTimer > 0.1) {
+        flickerTimer = 0;
+        panelGroup.children.forEach(function(p) {
+          if (Math.random() > 0.95) {
+            p.visible = !p.visible;
+          }
+        });
+      }
+
+      bloom.strength = 0.8 + audioEnergy * 0.6;
+      chromaticPass.uniforms.uTime.value = t;
+
+      controls.update();
+      composer.render();
+    }
+
+    animate();
+
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let touchStartTime = 0;
+
+    container.addEventListener("pointerdown", function(e) {
+      touchStartX = e.clientX;
+      touchStartY = e.clientY;
+      touchStartTime = Date.now();
+    });
+
+    container.addEventListener("pointerup", function(e) {
+      const dx = Math.abs(e.clientX - touchStartX);
+      const dy = Math.abs(e.clientY - touchStartY);
+      const dt = Date.now() - touchStartTime;
+      if (dx < 15 && dy < 15 && dt < 450) {
+        if (window.AndroidInterface && window.AndroidInterface.onOrbClicked) {
+          window.AndroidInterface.onOrbClicked();
+        }
+      }
+    });
+
+    window.addEventListener("resize", function() {
+      const w = window.innerWidth || 300;
+      const h = window.innerHeight || 300;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+      composer.setSize(w, h);
+    });
+  </script>
+</body>
+</html>

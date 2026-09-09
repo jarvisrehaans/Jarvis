@@ -1,0 +1,232 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:padding="12dp">
+
+    <!-- Outer ScrollView ensures all contents (especially update buttons) are always accessible on all screen sizes and font scales -->
+    <androidx.core.widget.NestedScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fillViewport="true"
+        android:overScrollMode="never"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_update_dialog"
+            android:orientation="vertical"
+            android:paddingStart="20dp"
+            android:paddingTop="20dp"
+            android:paddingEnd="20dp"
+            android:paddingBottom="18dp"
+            android:gravity="center_horizontal">
+
+            <!-- Glowing Icon Header -->
+            <FrameLayout
+                android:layout_width="54dp"
+                android:layout_height="54dp"
+                android:background="@drawable/bg_avatar_circle"
+                android:backgroundTint="#2600E5FF">
+
+                <ImageView
+                    android:layout_width="28dp"
+                    android:layout_height="28dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_cloud_download"
+                    app:tint="#00E5FF"
+                    android:contentDescription="Update Icon" />
+            </FrameLayout>
+
+            <!-- New Version Pill Badge -->
+            <TextView
+                android:id="@+id/dialogUpdateBadge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_update_badge"
+                android:paddingStart="10dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="10dp"
+                android:paddingBottom="4dp"
+                android:text="⚡ SYSTEM UPDATE DETECTED"
+                android:textColor="#00E5FF"
+                android:fontFamily="sans-serif-black"
+                android:textSize="10sp"
+                android:letterSpacing="0.08" />
+
+            <!-- Title -->
+            <TextView
+                android:id="@+id/dialogUpdateTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="JARVIS AI v1.5.4"
+                android:textColor="@color/white"
+                android:fontFamily="sans-serif-bold"
+                android:textSize="20sp"
+                android:letterSpacing="-0.01" />
+
+            <!-- Version Transition Subtitle -->
+            <TextView
+                android:id="@+id/dialogVersionTransition"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="3dp"
+                android:text="Installed: v1.5.3  ➔  Available: v1.5.4"
+                android:textColor="#94A3B8"
+                android:fontFamily="sans-serif-medium"
+                android:textSize="12sp" />
+
+            <!-- Changelog Container Header -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="WHAT'S NEW IN THIS RELEASE"
+                android:textColor="#38BDF8"
+                android:fontFamily="sans-serif-black"
+                android:textSize="10sp"
+                android:letterSpacing="0.06" />
+
+            <!-- Changelog Card with fixed height scroll view so buttons are never pushed off screen -->
+            <FrameLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:background="@drawable/bg_changelog_box"
+                android:padding="12dp">
+
+                <ScrollView
+                    android:id="@+id/dialogChangelogScrollView"
+                    android:layout_width="match_parent"
+                    android:layout_height="125dp"
+                    android:nestedScrollingEnabled="true"
+                    android:scrollbars="vertical"
+                    android:fadeScrollbars="false">
+
+                    <TextView
+                        android:id="@+id/dialogChangelogText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:lineSpacingExtra="3dp"
+                        android:textColor="#E2E8F0"
+                        android:textSize="12sp" />
+                </ScrollView>
+            </FrameLayout>
+
+            <!-- Live Download Progress Section (Visible only when downloading) -->
+            <LinearLayout
+                android:id="@+id/dialogDownloadProgressSection"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <ProgressBar
+                    android:id="@+id/dialogProgressBar"
+                    style="?android:attr/progressBarStyleHorizontal"
+                    android:layout_width="match_parent"
+                    android:layout_height="6dp"
+                    android:indeterminate="true"
+                    android:progressTint="#00E5FF" />
+
+                <TextView
+                    android:id="@+id/dialogProgressStatusText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:gravity="center"
+                    android:text="Downloading update package... please wait"
+                    android:textColor="#38BDF8"
+                    android:textSize="12sp"
+                    android:fontFamily="sans-serif-medium" />
+            </LinearLayout>
+
+            <!-- Actions Container: ALWAYS visible right below changelog -->
+            <LinearLayout
+                android:id="@+id/dialogActionsContainer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:orientation="vertical">
+
+                <!-- Primary: Update Now -->
+                <FrameLayout
+                    android:id="@+id/dialogUpdateNowBtn"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:background="@drawable/bg_save_button"
+                    android:clickable="true"
+                    android:focusable="true">
+
+                    <LinearLayout
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="center"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <ImageView
+                            android:layout_width="18dp"
+                            android:layout_height="18dp"
+                            android:src="@drawable/ic_cloud_download"
+                            app:tint="@color/white"
+                            android:contentDescription="@null" />
+
+                        <TextView
+                            android:id="@+id/dialogUpdateNowBtnText"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:text="UPDATE NOW"
+                            android:textColor="@color/white"
+                            android:fontFamily="sans-serif-black"
+                            android:textSize="13sp"
+                            android:letterSpacing="0.05" />
+                    </LinearLayout>
+                </FrameLayout>
+
+                <!-- Secondary: Direct Browser Download -->
+                <FrameLayout
+                    android:id="@+id/dialogBrowserDirectBtn"
+                    android:layout_width="match_parent"
+                    android:layout_height="40dp"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/bg_spinner_field"
+                    android:clickable="true"
+                    android:focusable="true">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="center"
+                        android:text="DIRECT BROWSER LINK"
+                        android:textColor="#38BDF8"
+                        android:fontFamily="sans-serif-bold"
+                        android:textSize="12sp"
+                        android:letterSpacing="0.04" />
+                </FrameLayout>
+
+                <!-- Tertiary: Later / Dismiss -->
+                <TextView
+                    android:id="@+id/dialogLaterBtn"
+                    android:layout_width="match_parent"
+                    android:layout_height="34dp"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center"
+                    android:text="Remind Me Later"
+                    android:textColor="#64748B"
+                    android:textSize="12sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:background="?attr/selectableItemBackground" />
+            </LinearLayout>
+
+        </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
+</FrameLayout>

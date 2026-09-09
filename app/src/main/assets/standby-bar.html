@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Standby Bar</title>
+<style>
+  :root{
+    --glow: #3B82F6;
+    --glow-dim: #1E3A8A;
+    --border-accent: rgba(37, 99, 235, 0.35);
+    --border-accent-bar: rgba(37, 99, 235, 0.25);
+    --btn-stroke: #3B82F6;
+    --shadow-accent: rgba(59, 130, 246, 0.25);
+  }
+
+  body.theme-gold {
+    --glow: #F59E0B;
+    --glow-dim: #78350F;
+    --border-accent: rgba(217, 119, 6, 0.35);
+    --border-accent-bar: rgba(217, 119, 6, 0.25);
+    --btn-stroke: #F59E0B;
+    --shadow-accent: rgba(245, 158, 11, 0.25);
+  }
+
+  *, *::before, *::after {
+    -webkit-tap-highlight-color: transparent !important;
+    -webkit-focus-ring-color: transparent !important;
+    outline: none !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
+    -webkit-touch-callout: none !important;
+  }
+  *:focus {
+    outline: none !important;
+  }
+  html,body{
+    margin:0;
+    padding:0;
+    width:100%;
+    height:100%;
+    background:transparent !important;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:flex-end;
+    padding-bottom:10px;
+    font-family:'Segoe UI', Arial, Roboto, sans-serif;
+    overflow:visible !important;
+    user-select:none;
+    -webkit-user-select:none;
+    box-sizing:border-box;
+  }
+
+  /* Floating Popup Menu above bar */
+  .popup-menu {
+    position: absolute;
+    bottom: 78px;
+    right: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 16px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.01) 40%, rgba(0,0,0,0.7) 100%), rgba(10,12,14,0.95);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1.2px solid var(--border-accent);
+    box-shadow: 0 0 16px var(--shadow-accent), 0 8px 24px rgba(0,0,0,0.85);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(10px) scale(0.92);
+    transition: opacity 0.25s ease, transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    z-index: 1000;
+  }
+
+  .popup-menu.show {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0) scale(1);
+  }
+
+  .popup-btn {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    cursor: pointer;
+    padding: 5px 10px;
+    border-radius: 999px;
+    transition: background 0.2s ease, transform 0.15s ease;
+  }
+
+  .popup-btn:active {
+    transform: scale(0.92);
+    background: rgba(0, 229, 255, 0.2);
+  }
+
+  body.theme-gold .popup-btn:active {
+    background: rgba(229, 168, 59, 0.2);
+  }
+
+  .popup-btn svg {
+    width: 17px;
+    height: 17px;
+    stroke: var(--btn-stroke);
+    fill: none;
+    transition: stroke 0.2s ease;
+  }
+
+  .popup-btn span {
+    color: #E2F1F8;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+  }
+
+  .popup-divider {
+    width: 1px;
+    height: 16px;
+    background: var(--border-accent);
+  }
+
+  /* Main Standby Bar with REDUCED fixed width (285px) */
+  .bar{
+    position:relative;
+    width:285px;
+    height:62px;
+    border-radius:999px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:0 16px;
+    gap:10px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.01) 40%, rgba(0,0,0,0.6) 100%),
+      rgba(10,12,14,0.92);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border:1.2px solid var(--border-accent-bar);
+    box-shadow:
+      inset 0 1px 1px rgba(255,255,255,0.2),
+      inset 0 -1px 6px rgba(0,0,0,0.7),
+      0 4px 20px rgba(0,0,0,0.7);
+    overflow:hidden;
+    box-sizing:border-box;
+  }
+
+  /* subtle glass sheen */
+  .bar::before{
+    content:"";
+    position:absolute;
+    top:0; left:0; right:0;
+    height:45%;
+    background:linear-gradient(180deg, rgba(255,255,255,0.09), rgba(255,255,255,0) 100%);
+    pointer-events:none;
+  }
+
+  /* soft ambient bottom rim glow */
+  .bar::after{
+    content:"";
+    position:absolute;
+    left:12%;
+    right:12%;
+    bottom:0;
+    height:2px;
+    background:linear-gradient(90deg, transparent, var(--glow), transparent);
+    filter:blur(1.5px);
+    opacity:0.6;
+    transition:background 0.3s ease, opacity 0.3s ease;
+  }
+
+  .status-group{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    flex:1;
+    min-width:0;
+    overflow:hidden;
+  }
+
+  .dot{
+    width:9px;
+    height:9px;
+    min-width:9px;
+    border-radius:50%;
+    background:var(--glow);
+    box-shadow:0 0 6px var(--glow);
+    animation:pulse 2.5s ease-in-out infinite;
+    transition:background 0.3s ease, box-shadow 0.3s ease;
+  }
+
+  @keyframes pulse{
+    0%,100%{ opacity:1; box-shadow:0 0 6px var(--glow);}
+    50%{ opacity:0.4; box-shadow:0 0 2px var(--glow);}
+  }
+
+  .label{
+    color:#E0F7FA;
+    font-weight:600;
+    letter-spacing:1.1px;
+    font-size:13px;
+    text-shadow:0 0 8px var(--shadow-accent);
+    white-space:nowrap;
+    text-overflow:ellipsis;
+    overflow:hidden;
+    transition:color 0.3s ease, text-shadow 0.3s ease;
+  }
+
+  body.theme-gold .label {
+    color: #F0E6D2;
+  }
+
+  .controls-group{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    flex:0 0 auto;
+  }
+
+  .icon-btn{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    flex:0 0 auto;
+    padding:4px;
+    border-radius:50%;
+    transition:transform 0.15s ease, opacity 0.2s ease;
+  }
+
+  .icon-btn:active{
+    transform:scale(0.88);
+  }
+
+  .icon-btn svg{
+    width:20px;
+    height:20px;
+    stroke:#FFFFFF;
+    filter:drop-shadow(0 0 4px rgba(112,225,255,0.6));
+    fill:none;
+    transition:stroke 0.2s ease, filter 0.2s ease;
+  }
+
+  body.theme-gold .icon-btn svg {
+    filter:drop-shadow(0 0 4px rgba(255,229,153,0.6));
+  }
+
+  .icon-btn.muted svg{
+    stroke:#666666;
+    filter:none;
+  }
+
+  .divider{
+    width:1px;
+    height:22px;
+    background:var(--border-accent-bar);
+    flex:0 0 auto;
+    transition:background 0.3s ease;
+  }
+
+  .power-btn{
+    width:33px;
+    height:33px;
+    min-width:33px;
+    border-radius:50%;
+    border:1.2px solid var(--border-accent);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    box-shadow:0 0 6px var(--shadow-accent), inset 0 0 4px var(--shadow-accent);
+    cursor:pointer;
+    flex:0 0 auto;
+    transition:background 0.2s ease, transform 0.15s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .power-btn:active{
+    transform:scale(0.88);
+  }
+
+  .power-btn svg{
+    width:16px;
+    height:16px;
+    stroke:var(--btn-stroke);
+    fill:none;
+    transition:stroke 0.2s ease;
+  }
+
+  .expand-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex: 0 0 auto;
+    padding: 3px;
+    border-radius: 50%;
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .expand-btn:active {
+    transform: scale(0.88);
+  }
+
+  .expand-btn svg {
+    width: 18px;
+    height: 18px;
+    stroke: var(--btn-stroke);
+    fill: none;
+    filter: drop-shadow(0 0 3px var(--shadow-accent));
+    transition: stroke 0.2s ease, transform 0.25s ease;
+  }
+
+  .expand-btn.open {
+    transform: rotate(180deg);
+  }
+
+  /* off state */
+  .power-btn.off{
+    border-color:#444444;
+    box-shadow:none;
+  }
+
+  .power-btn.off svg{
+    stroke:#555555;
+  }
+
+  .bar.off .dot{
+    background:#555555;
+    box-shadow:none;
+    animation:none;
+  }
+
+  .bar.off .label{
+    color:#777777;
+    text-shadow:none;
+  }
+
+  .bar.off::after{
+    opacity:0.1;
+  }
+</style>
+</head>
+<body>
+
+<!-- Popup Camera & Vision menu -->
+<div class="popup-menu" id="visionPopup">
+  <div class="popup-btn" id="cameraBtn" title="Toggle Live Camera Vision">
+    <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+      <circle cx="12" cy="13" r="4"></circle>
+    </svg>
+    <span>Camera</span>
+  </div>
+  <div class="popup-divider"></div>
+  <div class="popup-btn" id="visionBtn" title="Toggle Live Screen Vision">
+    <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+      <circle cx="12" cy="12" r="3"></circle>
+    </svg>
+    <span>Vision</span>
+  </div>
+</div>
+
+<!-- Main Bar -->
+<div class="bar" id="bar">
+  <div class="status-group">
+    <div class="dot" id="dot"></div>
+    <div class="label" id="label">Standby</div>
+  </div>
+
+  <div class="controls-group">
+    <div class="icon-btn" id="micBtn" title="Mute microphone">
+      <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="2" width="6" height="12" rx="3"></rect>
+        <path d="M5 10a7 7 0 0 0 14 0"></path>
+        <line x1="12" y1="19" x2="12" y2="22"></line>
+      </svg>
+    </div>
+
+    <div class="divider" id="divider"></div>
+
+    <div class="power-btn" id="powerBtn" title="Turn off">
+      <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="12" y1="2" x2="12" y2="11"></line>
+        <path d="M7 5a8 8 0 1 0 10 0"></path>
+      </svg>
+    </div>
+
+    <div class="expand-btn" id="expandBtn" title="Camera & Vision">
+      <svg viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="18 15 12 9 6 15"></polyline>
+      </svg>
+    </div>
+  </div>
+</div>
+
+<script>
+  const barEl = document.getElementById('bar');
+  const labelEl = document.getElementById('label');
+  const micBtn = document.getElementById('micBtn');
+  const powerBtn = document.getElementById('powerBtn');
+  const expandBtn = document.getElementById('expandBtn');
+  const visionPopup = document.getElementById('visionPopup');
+  const cameraBtn = document.getElementById('cameraBtn');
+  const visionBtn = document.getElementById('visionBtn');
+
+  let isOn = true;
+  let isMuted = false;
+  let isPopupOpen = false;
+
+  expandBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    isPopupOpen = !isPopupOpen;
+    visionPopup.classList.toggle('show', isPopupOpen);
+    expandBtn.classList.toggle('open', isPopupOpen);
+  });
+
+  cameraBtn.addEventListener('click', () => {
+    isPopupOpen = false;
+    visionPopup.classList.remove('show');
+    expandBtn.classList.remove('open');
+    if (window.AndroidInterface && window.AndroidInterface.onCameraClicked) {
+      window.AndroidInterface.onCameraClicked();
+    }
+  });
+
+  visionBtn.addEventListener('click', () => {
+    isPopupOpen = false;
+    visionPopup.classList.remove('show');
+    expandBtn.classList.remove('open');
+    if (window.AndroidInterface && window.AndroidInterface.onVisionClicked) {
+      window.AndroidInterface.onVisionClicked();
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (isPopupOpen && !visionPopup.contains(e.target) && !expandBtn.contains(e.target)) {
+      isPopupOpen = false;
+      visionPopup.classList.remove('show');
+      expandBtn.classList.remove('open');
+    }
+  });
+
+  micBtn.addEventListener('click', () => {
+    if (window.AndroidInterface && window.AndroidInterface.onMicClicked) {
+      window.AndroidInterface.onMicClicked();
+    }
+  });
+
+  powerBtn.addEventListener('click', () => {
+    if (window.AndroidInterface && window.AndroidInterface.onPowerClicked) {
+      window.AndroidInterface.onPowerClicked();
+    }
+  });
+
+  window.setAppTheme = function(themeName) {
+    if (themeName === 'gold') {
+      document.body.classList.add('theme-gold');
+    } else {
+      document.body.classList.remove('theme-gold');
+    }
+  };
+
+  window.setBarState = function(stateText, colorHex, muted, poweredOn) {
+    isOn = (poweredOn !== undefined) ? poweredOn : true;
+    isMuted = (muted !== undefined) ? muted : false;
+
+    labelEl.textContent = stateText || "Standby";
+    if (colorHex) {
+      document.documentElement.style.setProperty('--glow', colorHex);
+      document.documentElement.style.setProperty('--btn-stroke', colorHex);
+    }
+
+    barEl.classList.toggle('off', !isOn);
+    powerBtn.classList.toggle('off', !isOn);
+    micBtn.classList.toggle('muted', isMuted || !isOn);
+    if (!isOn) {
+      dotEl.style.transform = "none";
+      dotEl.style.boxShadow = "none";
+    }
+  };
+
+  window.setVisionState = function(active) {
+    if (active) {
+      visionBtn.querySelector('svg').style.stroke = "#57FF6A";
+    } else {
+      visionBtn.querySelector('svg').style.stroke = getComputedStyle(document.documentElement).getPropertyValue('--btn-stroke').trim() || "#00E5FF";
+    }
+  };
+
+  window.setCameraState = function(active) {
+    if (active) {
+      cameraBtn.querySelector('svg').style.stroke = "#57FF6A";
+    } else {
+      cameraBtn.querySelector('svg').style.stroke = getComputedStyle(document.documentElement).getPropertyValue('--btn-stroke').trim() || "#00E5FF";
+    }
+  };
+
+  const dotEl = document.getElementById('dot');
+
+  window.setAudioAmplitude = function(rms) {
+    if (!isOn || isMuted) return;
+    const level = Math.min(1.0, Math.max(0.0, rms));
+    if (dotEl) {
+      const scale = 1.0 + level * 0.7;
+      const glowPx = 6 + level * 16;
+      dotEl.style.transform = `scale(${scale})`;
+      dotEl.style.boxShadow = `0 0 ${glowPx}px var(--glow)`;
+    }
+  };
+</script>
+
+</body>
+</html>

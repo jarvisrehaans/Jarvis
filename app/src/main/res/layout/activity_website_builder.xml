@@ -1,0 +1,297 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_gradient_mesh">
+
+    <!-- Top AppBar Header -->
+    <LinearLayout
+        android:id="@+id/topBar"
+        android:layout_width="match_parent"
+        android:layout_height="64dp"
+        android:background="#A6050505"
+        android:elevation="4dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="14dp"
+        android:paddingTop="12dp"
+        android:paddingEnd="18dp"
+        android:paddingBottom="12dp">
+
+        <ImageButton
+            android:id="@+id/backBtn"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="@drawable/bg_settings_row"
+            android:contentDescription="Back"
+            android:padding="8dp"
+            android:rotation="180"
+            android:src="@drawable/ic_chevron_right"
+            app:tint="@color/accent_primary" />
+
+        <TextView
+            android:id="@+id/websiteBuilderTitleText"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_weight="1"
+            android:fontFamily="sans-serif-black"
+            android:letterSpacing="-0.02"
+            android:text="WEBSITE BUILDER"
+            android:textColor="@color/accent_primary"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <ImageView
+            android:id="@+id/headerBuilderIcon"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:contentDescription="Website Builder"
+            android:src="@drawable/ic_settings"
+            app:tint="@color/accent_primary" />
+    </LinearLayout>
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_marginTop="64dp"
+        android:clipToPadding="false"
+        android:fillViewport="false"
+        android:overScrollMode="always"
+        android:paddingBottom="24dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="18dp">
+
+            <!-- Section 1: OpenRouter API Configuration Card -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_orb_card"
+                android:elevation="6dp"
+                android:orientation="vertical"
+                android:padding="20dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.1"
+                    android:text="OPENROUTER PROVIDER CONFIG"
+                    android:textColor="@color/orb_cyan_glow"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Bring your own OpenRouter API key to power voice-activated website generation using free AI models."
+                    android:textColor="@color/orb_text_muted"
+                    android:textSize="12sp" />
+
+                <!-- API Key Input Field -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:text="OpenRouter API Key"
+                    android:textColor="#E5D0B0"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+
+                <RelativeLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="6dp"
+                    android:background="@drawable/bg_gold_input">
+
+                    <EditText
+                        android:id="@+id/apiKeyInput"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:layout_toStartOf="@+id/keyToggleBtn"
+                        android:background="@null"
+                        android:hint="sk-or-v1-..."
+                        android:inputType="textPassword"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="10dp"
+                        android:textColor="#FFFFFF"
+                        android:textColorHint="#66FFFFFF"
+                        android:textSize="14sp" />
+
+                    <ImageButton
+                        android:id="@+id/keyToggleBtn"
+                        android:layout_width="44dp"
+                        android:layout_height="match_parent"
+                        android:layout_alignParentEnd="true"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Toggle key"
+                        android:src="@android:drawable/ic_menu_view"
+                        app:tint="@color/orb_primary" />
+                </RelativeLayout>
+
+                <!-- Free Model Spinner Selection -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:text="Select Free Model"
+                    android:textColor="#E5D0B0"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+
+                <RelativeLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="6dp"
+                    android:background="@drawable/bg_gold_input"
+                    android:paddingHorizontal="8dp">
+
+                    <Spinner
+                        android:id="@+id/modelSpinner"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:spinnerMode="dropdown" />
+                </RelativeLayout>
+
+                <!-- Save Config Button -->
+                <TextView
+                    android:id="@+id/saveConfigBtn"
+                    android:layout_width="match_parent"
+                    android:layout_height="50dp"
+                    android:layout_marginTop="20dp"
+                    android:background="@drawable/bg_orb_button"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:text="SAVE CONFIGURATION"
+                    android:textColor="#07060A"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+            </LinearLayout>
+
+            <!-- Section 2: Test Website Generator Card -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:background="@drawable/bg_orb_card"
+                android:elevation="6dp"
+                android:orientation="vertical"
+                android:padding="20dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.1"
+                    android:text="TEST WEBSITE GENERATOR"
+                    android:textColor="@color/orb_cyan_glow"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Generate a website on-demand without voice commands to test your API key and model."
+                    android:textColor="@color/orb_text_muted"
+                    android:textSize="12sp" />
+
+                <EditText
+                    android:id="@+id/testWebsiteNameInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="50dp"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/bg_gold_input"
+                    android:hint="Website/Business Name (e.g. Sweet Treats)"
+                    android:paddingHorizontal="14dp"
+                    android:textColor="#FFFFFF"
+                    android:textColorHint="#66FFFFFF"
+                    android:textSize="14sp" />
+
+                <EditText
+                    android:id="@+id/testWebsiteDescInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="70dp"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/bg_gold_input"
+                    android:gravity="top|start"
+                    android:hint="Business details (e.g. Artisanal bakery selling cakes and cookies)"
+                    android:padding="12dp"
+                    android:textColor="#FFFFFF"
+                    android:textColorHint="#66FFFFFF"
+                    android:textSize="14sp" />
+
+                <TextView
+                    android:id="@+id/generateWebsiteBtn"
+                    android:layout_width="match_parent"
+                    android:layout_height="50dp"
+                    android:layout_marginTop="16dp"
+                    android:background="@drawable/bg_orb_button"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:text="GENERATE WEBSITE NOW"
+                    android:textColor="#07060A"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <ProgressBar
+                    android:id="@+id/genProgressBar"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_gravity="center_horizontal"
+                    android:layout_marginTop="14dp"
+                    android:indeterminateTint="@color/orb_cyan_glow"
+                    android:visibility="gone" />
+
+            </LinearLayout>
+
+            <!-- Section 3: Storage & Generated Websites List -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:background="@drawable/bg_orb_card"
+                android:elevation="6dp"
+                android:orientation="vertical"
+                android:padding="20dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="0.1"
+                    android:text="GENERATED WEBSITES STORAGE"
+                    android:textColor="@color/orb_cyan_glow"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/storagePathText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Saved in: Documents/JarvisWebsites/"
+                    android:textColor="@color/orb_text_muted"
+                    android:textSize="12sp" />
+
+                <LinearLayout
+                    android:id="@+id/websitesContainer"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:orientation="vertical" />
+
+            </LinearLayout>
+
+        </LinearLayout>
+    </ScrollView>
+</FrameLayout>

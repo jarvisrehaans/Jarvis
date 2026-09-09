@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/orb_dark_bg"
+    android:orientation="vertical">
+
+    <!-- Header Toolbar -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="64dp"
+        android:paddingHorizontal="16dp">
+
+        <ImageButton
+            android:id="@+id/backBtn"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_centerVertical="true"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Back"
+            android:src="@android:drawable/ic_menu_revert"
+            app:tint="@color/orb_cyan" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerInParent="true"
+            android:fontFamily="sans-serif-medium"
+            android:text="Privacy Policy"
+            android:textColor="@color/orb_cyan_glow"
+            android:textSize="18sp" />
+    </RelativeLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/orb_stroke" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:padding="20dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_orb_card"
+            android:orientation="vertical"
+            android:padding="20dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="JARVIS AI Privacy Policy"
+                android:textColor="@color/orb_cyan_glow"
+                android:textSize="20sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Last Updated: August 2026"
+                android:textColor="@color/orb_text_muted"
+                android:textSize="12sp" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginVertical="16dp"
+                android:background="@color/orb_stroke" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:lineSpacingExtra="4dp"
+                android:text="1. Privacy Guarantee\nYour privacy is paramount. JARVIS AI is engineered with security and transparency at its core. We process only the data strictly necessary to fulfill your requested voice interactions and device operations.\n\n2. Microphone &amp; Audio Processing\nWhen a voice session is active, microphone audio (16kHz PCM16) is captured to facilitate real-time streaming dialogue. Background mic listening operates strictly in wake-phrase standby mode. Audio chunks are transmitted securely over SSL WebSockets.\n\n3. Camera &amp; Screen Visual Context\nVisual features (Camera Vision and Screen Share) process image frames exclusively upon explicit user invocation. Visual frames are processed transiently to assist you and are never permanently stored on external servers.\n\n4. Contacts &amp; Device Permissions\nPermissions such as Contacts access, Phone Calling, and Accessibility are queried on-demand when you explicitly issue relevant commands (e.g. 'call Rahul' or 'open Instagram'). Data retrieved locally remains on your device.\n\n5. Account Data &amp; Security\nUser profiles (name, email, profile picture) are authenticated via Google Sign-In. Preference settings (API keys, voice choices) are encrypted locally using Android Master Key EncryptedSharedPreferences.\n\n6. Data Control &amp; Deletion\nYou have complete control over your data. You may revoke permissions or sign out at any time from the app Settings."
+                android:textColor="#D0D7E5"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/acceptCloseBtn"
+                android:layout_width="match_parent"
+                android:layout_height="50dp"
+                android:layout_marginTop="24dp"
+                android:background="@drawable/bg_orb_button"
+                android:text="I Understand &amp; Agree"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

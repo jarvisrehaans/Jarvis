@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Default Base JARVIS Theme (Electric Arc Blue) -->
+    <style name="Theme.Jarvis" parent="Theme.Jarvis.Blue" />
+
+    <!-- Arc Blue Theme (Default / Real JARVIS) -->
+    <style name="Theme.Jarvis.Blue" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/accent_primary</item>
+        <item name="colorPrimaryVariant">@color/accent_secondary</item>
+        <item name="colorOnPrimary">@color/text_on_accent</item>
+        <item name="colorSecondary">@color/accent_secondary</item>
+        <item name="colorAccent">@color/accent_primary</item>
+        <item name="colorControlHighlight">#333B82F6</item>
+        <item name="android:windowBackground">@color/bg_base</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@color/bg_base</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:windowContentTransitions">true</item>
+        <item name="android:windowAnimationStyle">@style/Jarvis.ActivityTransition</item>
+    </style>
+
+    <!-- Amber Gold Theme (Cyberpunk Luxury Gold) -->
+    <style name="Theme.Jarvis.Gold" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/gold_accent_primary</item>
+        <item name="colorPrimaryVariant">@color/gold_accent_secondary</item>
+        <item name="colorOnPrimary">@color/text_on_accent</item>
+        <item name="colorSecondary">@color/gold_accent_secondary</item>
+        <item name="colorAccent">@color/gold_accent_primary</item>
+        <item name="colorControlHighlight">#33F59E0B</item>
+        <item name="android:windowBackground">@color/bg_base</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@color/bg_base</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:windowContentTransitions">true</item>
+        <item name="android:windowAnimationStyle">@style/Jarvis.ActivityTransition</item>
+    </style>
+
+    <style name="Jarvis.ActivityTransition" parent="android:Animation.Activity">
+        <item name="android:activityOpenEnterAnimation">@anim/activity_open_enter</item>
+        <item name="android:activityOpenExitAnimation">@anim/activity_open_exit</item>
+        <item name="android:activityCloseEnterAnimation">@anim/activity_close_enter</item>
+        <item name="android:activityCloseExitAnimation">@anim/activity_close_exit</item>
+    </style>
+
+    <style name="Theme.Jarvis.Dialog" parent="Theme.MaterialComponents.DayNight.Dialog.Alert">
+        <item name="colorPrimary">@color/accent_primary</item>
+        <item name="colorAccent">@color/accent_primary</item>
+        <item name="android:windowBackground">@drawable/bg_dialog</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textColorSecondary">@color/text_secondary</item>
+    </style>
+</resources>

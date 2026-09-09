@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base surfaces (Pure pitch black #000000 theme) -->
+    <color name="bg_base">#000000</color>
+    <color name="bg_elevated">#080808</color>
+    <color name="surface_glass">#0E0E0E</color>
+    <color name="surface_glass_2">#141414</color>
+    <color name="border_subtle">#222222</color>
+    <color name="border_hairline">#181818</color>
+
+    <!-- Default Brand Accent (Arc Blue - Production Token) -->
+    <color name="accent_primary">#3B82F6</color>
+    <color name="accent_secondary">#60A5FA</color>
+    <color name="accent_primary_border">#2563EB</color>
+    <color name="accent_primary_dim">#1E3A8A</color>
+    <color name="accent_surface_glow">#2E3B82F6</color>
+
+    <!-- Amber Gold Brand Accent (Amber Gold - Production Token) -->
+    <color name="gold_accent_primary">#F59E0B</color>
+    <color name="gold_accent_secondary">#FBBF24</color>
+    <color name="gold_accent_border">#D97706</color>
+    <color name="gold_accent_primary_dim">#78350F</color>
+    <color name="gold_accent_surface_glow">#2EF59E0B</color>
+
+    <!-- Text -->
+    <color name="text_primary">#EEEEEE</color>
+    <color name="text_secondary">#AAAAAA</color>
+    <color name="text_tertiary">#666666</color>
+    <color name="text_on_accent">#000000</color>
+
+    <!-- Status -->
+    <color name="success">#34D399</color>
+    <color name="danger">#FF5C7A</color>
+    <color name="warning">#FFB454</color>
+
+    <!-- Orb state palettes (Default Arc Blue) -->
+    <color name="orb_idle_start">#0A1C28</color>
+    <color name="orb_idle_end">#04080C</color>
+
+    <color name="orb_listening_start">#00E5FF</color>
+    <color name="orb_listening_end">#0088FF</color>
+
+    <color name="orb_thinking_start">#70E1FF</color>
+    <color name="orb_thinking_end">#004866</color>
+
+    <color name="orb_speaking_start">#80E5FF</color>
+    <color name="orb_speaking_end">#00E5FF</color>
+
+    <!-- Misc -->
+    <color name="white">#FFFFFF</color>
+    <color name="black">#000000</color>
+    <color name="scrim">#B3000000</color>
+</resources>

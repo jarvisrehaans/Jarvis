@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="24dp">
+
+    <EditText
+        android:id="@+id/dialogNameInput"
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:hint="Name (e.g. Priya)"
+        android:textColorHint="@color/text_tertiary"
+        android:textColor="@color/text_primary"
+        android:background="@drawable/bg_input_field_focused"
+        android:paddingStart="14dp"
+        android:paddingEnd="14dp"
+        android:inputType="textPersonName" />
+
+    <EditText
+        android:id="@+id/dialogNumberInput"
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:layout_marginTop="12dp"
+        android:hint="Phone Number (+91...)"
+        android:textColorHint="@color/text_tertiary"
+        android:textColor="@color/text_primary"
+        android:background="@drawable/bg_input_field_focused"
+        android:paddingStart="14dp"
+        android:paddingEnd="14dp"
+        android:inputType="phone" />
+
+</LinearLayout>

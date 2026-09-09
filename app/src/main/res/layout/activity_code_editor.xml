@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0D0A08"
+    android:orientation="vertical">
+
+    <!-- Top Navigation Header -->
+    <LinearLayout
+        android:id="@+id/topBar"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:background="#A6050505"
+        android:elevation="4dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="12dp">
+
+        <ImageButton
+            android:id="@+id/backBtn"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:background="@drawable/bg_settings_row"
+            android:contentDescription="Back"
+            android:padding="6dp"
+            android:rotation="180"
+            android:src="@drawable/ic_chevron_right"
+            app:tint="@color/accent_primary" />
+
+        <TextView
+            android:id="@+id/folderTitleText"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:fontFamily="sans-serif-bold"
+            android:maxLines="1"
+            android:text="Website Code Editor"
+            android:textColor="@color/accent_primary"
+            android:textSize="16sp" />
+
+        <!-- Action Buttons: Preview & Save -->
+        <TextView
+            android:id="@+id/previewBtn"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginEnd="8dp"
+            android:background="@drawable/bg_orb_card"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:paddingHorizontal="12dp"
+            android:text="👁️ Live Preview"
+            android:textColor="@color/orb_cyan_glow"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/saveBtn"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:background="@drawable/bg_orb_button"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:paddingHorizontal="14dp"
+            android:text="💾 Save"
+            android:textColor="#07060A"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- File Tabs Selector (HTML | CSS | JS) -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:background="#120E08"
+        android:orientation="horizontal"
+        android:paddingHorizontal="8dp"
+        android:paddingTop="6dp">
+
+        <TextView
+            android:id="@+id/tabHtml"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="@drawable/bg_orb_card"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:text="📄 index.html"
+            android:textColor="@color/accent_primary"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tabCss"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:background="#1B150F"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:text="🎨 style.css"
+            android:textColor="@color/orb_text_muted"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/tabJs"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:background="#1B150F"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:text="⚡ script.js"
+            android:textColor="@color/orb_text_muted"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <!-- Editor & Live Preview Container -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <!-- Code Editor WebView -->
+        <WebView
+            android:id="@+id/editorWebView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <!-- Live Preview Overlay Container -->
+        <FrameLayout
+            android:id="@+id/livePreviewContainer"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#07060A"
+            android:visibility="gone">
+
+            <WebView
+                android:id="@+id/previewWebView"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
+            <TextView
+                android:id="@+id/closePreviewBtn"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_gravity="top|end"
+                android:layout_margin="14dp"
+                android:background="@drawable/bg_orb_button"
+                android:clickable="true"
+                android:elevation="10dp"
+                android:focusable="true"
+                android:gravity="center"
+                android:paddingHorizontal="16dp"
+                android:text="✕ Exit Preview"
+                android:textColor="#07060A"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </FrameLayout>
+    </FrameLayout>
+</LinearLayout>

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>JARVIS Code Editor</title>
+
+    <!-- CodeMirror 5 CDN (Embedded with Fallback) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/theme/monokai.min.css">
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/xml/xml.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/javascript/javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/css/css.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/htmlmixed/htmlmixed.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/selection/active-line.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/edit/matchbrackets.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/edit/closebrackets.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/edit/closetag.min.js"></script>
+
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        html, body {
+            width: 100%;
+            height: 100%;
+            background-color: #0D0A08;
+            color: #F5EBE6;
+            font-family: 'Courier New', Courier, monospace;
+            overflow: hidden;
+        }
+        .CodeMirror {
+            width: 100%;
+            height: 100vh;
+            font-family: 'Consolas', 'Fira Code', 'Monaco', 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.5;
+            background-color: #120E08 !important;
+            color: #F5EBE6 !important;
+        }
+        .CodeMirror-gutters {
+            background-color: #0B0806 !important;
+            border-right: 1px solid #2A2016 !important;
+        }
+        .CodeMirror-linenumber {
+            color: #7A6959 !important;
+        }
+        .CodeMirror-activeline-background {
+            background: rgba(255, 170, 48, 0.1) !important;
+        }
+        .CodeMirror-cursor {
+            border-left: 2px solid #FFAA30 !important;
+        }
+        .cm-s-monokai .cm-keyword { color: #FFAA30 !important; }
+        .cm-s-monokai .cm-atom { color: #FFCC66 !important; }
+        .cm-s-monokai .cm-number { color: #FFB74D !important; }
+        .cm-s-monokai .cm-string { color: #81C784 !important; }
+        .cm-s-monokai .cm-tag { color: #FF8A65 !important; }
+        .cm-s-monokai .cm-attribute { color: #FFB74D !important; }
+        .cm-s-monokai .cm-comment { color: #7A6959 !important; font-style: italic; }
+    </style>
+</head>
+<body>
+
+    <textarea id="editorTextarea"></textarea>
+
+    <script>
+        var editor = null;
+
+        document.addEventListener('DOMContentLoaded', function() {
+            var textarea = document.getElementById('editorTextarea');
+            
+            if (typeof CodeMirror !== 'undefined') {
+                editor = CodeMirror.fromTextArea(textarea, {
+                    lineNumbers: true,
+                    mode: "htmlmixed",
+                    theme: "monokai",
+                    styleActiveLine: true,
+                    matchBrackets: true,
+                    autoCloseBrackets: true,
+                    autoCloseTags: true,
+                    lineWrapping: true,
+                    tabSize: 4,
+                    indentUnit: 4
+                });
+
+                editor.on("change", function() {
+                    if (window.AndroidCodeEditor && window.AndroidCodeEditor.onContentChanged) {
+                        window.AndroidCodeEditor.onContentChanged(editor.getValue());
+                    }
+                });
+            } else {
+                // Fallback to basic textarea if CDN unavailable
+                textarea.style.display = 'block';
+                textarea.style.width = '100%';
+                textarea.style.height = '100vh';
+                textarea.style.backgroundColor = '#120E08';
+                textarea.style.color = '#F5EBE6';
+                textarea.style.padding = '12px';
+            }
+
+            if (window.AndroidCodeEditor && window.AndroidCodeEditor.onEditorReady) {
+                window.AndroidCodeEditor.onEditorReady();
+            }
+        });
+
+        function setEditorContent(code, fileType) {
+            var mode = "htmlmixed";
+            if (fileType === "css") mode = "css";
+            if (fileType === "js" || fileType === "javascript") mode = "javascript";
+            if (fileType === "html") mode = "htmlmixed";
+
+            if (editor) {
+                editor.setOption("mode", mode);
+                editor.setValue(code || "");
+                editor.refresh();
+            } else {
+                var textarea = document.getElementById('editorTextarea');
+                if (textarea) textarea.value = code || "";
+            }
+        }
+
+        function getEditorContent() {
+            if (editor) {
+                return editor.getValue();
+            }
+            var textarea = document.getElementById('editorTextarea');
+            return textarea ? textarea.value : "";
+        }
+    </script>
+</body>
+</html>

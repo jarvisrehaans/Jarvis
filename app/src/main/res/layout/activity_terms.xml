@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/orb_dark_bg"
+    android:orientation="vertical">
+
+    <!-- Header Toolbar -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="64dp"
+        android:paddingHorizontal="16dp">
+
+        <ImageButton
+            android:id="@+id/backBtn"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_centerVertical="true"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Back"
+            android:src="@android:drawable/ic_menu_revert"
+            app:tint="@color/orb_cyan" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerInParent="true"
+            android:fontFamily="sans-serif-medium"
+            android:text="Terms &amp; Conditions"
+            android:textColor="@color/orb_cyan_glow"
+            android:textSize="18sp" />
+    </RelativeLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/orb_stroke" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:padding="20dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_orb_card"
+            android:orientation="vertical"
+            android:padding="20dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="JARVIS AI Terms of Service"
+                android:textColor="@color/orb_cyan_glow"
+                android:textSize="20sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Last Updated: August 2026"
+                android:textColor="@color/orb_text_muted"
+                android:textSize="12sp" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginVertical="16dp"
+                android:background="@color/orb_stroke" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:lineSpacingExtra="4dp"
+                android:text="1. Acceptance of Terms\nBy accessing or using the JARVIS AI Assistant application, you agree to be bound by these Terms and Conditions. If you do not agree, you must not use the application.\n\n2. Real-Time Voice Processing &amp; AI Intelligence\nJARVIS utilizes real-time streaming audio services to deliver intelligent voice interactions. Microphone audio is processed solely to fulfill your voice commands and stream responses.\n\n3. Automated Device Actions\nJARVIS provides automated device capabilities including opening installed applications, controlling media playback, placing phone calls, adjusting system settings, and performing screen interactions via Android Accessibility Services. You acknowledge that automated actions are executed based on your voice commands.\n\n4. Privacy &amp; Data Protections\nJARVIS respects your privacy. Local preferences and security keys are stored securely on your device. We process only the data strictly necessary for assistant features.\n\n5. Account Authentication\nAuthentication is managed securely via Google Sign-In. You remain responsible for maintaining the confidentiality of your Google account.\n\n6. Disclaimers &amp; Service Availability\nJARVIS is provided 'AS IS' without warranties of any kind. Features may be updated or modified periodically to enhance performance and security."
+                android:textColor="#D0D7E5"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/acceptCloseBtn"
+                android:layout_width="match_parent"
+                android:layout_height="50dp"
+                android:layout_marginTop="24dp"
+                android:background="@drawable/bg_orb_button"
+                android:text="I Understand &amp; Agree"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

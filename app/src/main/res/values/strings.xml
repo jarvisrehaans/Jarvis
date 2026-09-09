@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">JARVIS</string>
+    <string name="accessibility_description">JARVIS needs this to open apps, click buttons, type text and navigate your phone on your behalf when you ask her to.</string>
+</resources>

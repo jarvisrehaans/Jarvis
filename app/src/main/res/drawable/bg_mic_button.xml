@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dark circular mic button matching the reference: near-black fill, no
+     purple/cyan gradient. Color now comes entirely from the ring + icon tint,
+     which are recolored per orb state in MainActivity. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
+    <solid android:color="@color/bg_base" />
+</shape>

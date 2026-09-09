@@ -1,0 +1,2261 @@
+package com.jarvis.assistant.service
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Binder
+import android.os.Build
+import android.os.IBinder
+import androidx.core.app.NotificationCompat
+import android.util.Log
+import com.jarvis.assistant.R
+import com.jarvis.assistant.JarvisApplication
+import com.jarvis.assistant.ai.AudioEngine
+import com.jarvis.assistant.ai.GeminiLiveClient
+import com.jarvis.assistant.ui.main.MainActivity
+import com.jarvis.assistant.util.AppLauncher
+import com.jarvis.assistant.util.ContactCaller
+import android.content.Context
+import android.media.AudioManager
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
+import android.widget.Toast
+import com.jarvis.assistant.youtube.YouTubeController
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+
+/**
+ * Owns the mic capture + Gemini Live WebSocket for the whole app lifetime,
+ * independent of whatever Activity is currently on screen.
+ *
+ * Why this exists: Android blocks microphone access for apps that are not
+ * in the foreground and have no active foreground service. Previously
+ * AudioEngine/GeminiLiveClient lived inside MainActivity, so the moment
+ * another app (e.g. YouTube, opened via open_app) came to the front, the
+ * OS cut mic access and JARVIS effectively went silent/crashed. Running this
+ * as a foreground service with type "microphone" keeps the conversation
+ * alive in the background.
+ *
+ * MainActivity binds to this service for UI updates (transcripts,
+ * amplitude, speaking state) via [JarvisVoiceListener], but the service
+ * itself does not depend on the Activity being bound or visible.
+ *
+ * --- Wake word ("Jarvis") gating ---
+ * The mic is ALWAYS on and ALWAYS streaming to Gemini (no separate local
+ * speech recognizer, so no extra mic-open/close cycles and no earcon
+ * beeping). Gemini transcribes speech in real time via input transcription;
+ * this class buffers each spoken turn's transcript and only lets JARVIS
+ * actually speak a reply or run a tool (open an app, call a contact, etc.)
+ * if that turn's transcript contains "Jarvis". If it doesn't, the reply is
+ * silently dropped and no tool is executed — so "open YouTube" alone does
+ * nothing, but "Jarvis, open YouTube" works.
+ */
+class JarvisVoiceService : Service() {
+
+    companion object {
+        private const val CHANNEL_ID = "jarvis_voice_channel"
+        private const val NOTIFICATION_ID = 101
+
+        // Common correct + likely-misheard spellings of the wake word, including
+        // Hindi Devanagari script and ASR transliterations so background detection is reliable.
+        private val WAKE_PHRASES = listOf(
+            "jarvis", "hi jarvis", "hello jarvis", "hey jarvis", "ok jarvis", "okay jarvis", "listen jarvis",
+            "jarviss", "jaarvis", "jarvish", "javis", "hey javis", "hi javis", "hello javis", "service", "travis",
+            "hey jarwis", "jarwis", "charvis", "chavis", "jharvis", "jervis", "zarvis", "dharvis", "garvis",
+            "arvis", "jarvez", "hai jarvis", "he jarvis", "hay jarvis", "sun jarvis", "suno jarvis",
+            "जरविस", "जरवीस", "जार्विश", "चालीस", "सर्विस", "जार्विस सुनो", "जागो जार्विस"
+        )
+
+        private const val IDLE_TO_SLEEP_MS = 120_000L  // 2 minutes of silence -> auto-sleep
+        private const val FOLLOW_UP_WINDOW_MS = 30_000L // 30s follow-up window after command execution
+    }
+
+    interface JarvisVoiceListener {
+        fun onConnected() {}
+        fun onSetupComplete() {}
+        fun onDisconnected() {}
+        fun onError(msg: String) {}
+        fun onInputTranscript(text: String) {}
+        fun onOutputTranscript(text: String) {}
+        fun onTurnComplete() {}
+        fun onAmplitudeChanged(rms: Float) {}
+        fun onSpeakingStarted() {}
+        fun onSpeakingStopped() {}
+        fun onToolCall(name: String, args: JSONObject, callId: String) {}
+        /** A turn was heard but ignored because it didn't start with "Jarvis". */
+        fun onCommandIgnored() {}
+        fun onScreenShareStateChanged(isSharing: Boolean) {}
+        fun onCameraVisionStateChanged(isActive: Boolean, isFront: Boolean) {}
+        fun onResearchStateChanged(isSearching: Boolean, query: String) {}
+        fun onShutdownRequested() {}
+    }
+
+    inner class LocalBinder : Binder() {
+        fun getService(): JarvisVoiceService = this@JarvisVoiceService
+    }
+
+    private val binder = LocalBinder()
+    private val toolScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    /** UI listeners (MainActivity, FloatingOrbService) receive callbacks simultaneously. */
+    private val listeners = java.util.concurrent.CopyOnWriteArraySet<JarvisVoiceListener>()
+
+    fun addListener(listener: JarvisVoiceListener) {
+        listeners.add(listener)
+    }
+
+    fun removeListener(listener: JarvisVoiceListener) {
+        listeners.remove(listener)
+    }
+
+    var uiListener: JarvisVoiceListener?
+        get() = listeners.firstOrNull()
+        set(value) {
+            if (value != null) addListener(value)
+        }
+
+    private inline fun dispatchToListeners(crossinline action: (JarvisVoiceListener) -> Unit) {
+        for (l in listeners) {
+            try {
+                action(l)
+            } catch (e: Exception) {
+                Log.e("JarvisVoiceService", "Error notifying listener", e)
+            }
+        }
+    }
+
+    private var currentVoiceName: String = "Kore"
+    private var isVoiceFemale: Boolean = true
+
+    fun setVoiceConfig(voiceName: String) {
+        currentVoiceName = voiceName
+        val maleVoiceNames = setOf("puck", "charon", "fenrir", "orus", "arvind", "amartya", "dev")
+        isVoiceFemale = !maleVoiceNames.contains(voiceName.lowercase().trim())
+    }
+
+    private var geminiLive: GeminiLiveClient? = null
+    private var audioEngine: AudioEngine? = null
+    private var screenCaptureEngine: com.jarvis.assistant.vision.ScreenCaptureEngine? = null
+    private var cameraVisionEngine: com.jarvis.assistant.vision.CameraVisionEngine? = null
+    private var isSessionStarted = false
+    private var isUserMuted = false
+
+    // ---------------------------------------------------------------
+    // Conversation State Machine
+    // ---------------------------------------------------------------
+    enum class ConversationState {
+        /** Full conversation mode. Mic streams to Gemini. All responses play aloud. */
+        ACTIVE,
+        /** User has gone silent. 2-minute countdown to SLEEPING. Any speech resets to ACTIVE. */
+        IDLE_COUNTDOWN,
+        /** Background silent mode. Mic does NOT stream to Gemini. Only WakeWordDetector listens. */
+        SLEEPING
+    }
+
+    @Volatile private var conversationState = ConversationState.ACTIVE
+    private var isAppInForeground = true
+    @Volatile private var lastUserSpeechTimeMs = System.currentTimeMillis()
+    private var idleCountdownJob: Job? = null
+    private var autoSleepJob: Job? = null
+    private var connectionHealthJob: Job? = null
+    /** Active follow-up window timer (30s after launching an app, conversation can continue without wake word) */
+    private var activeFollowUpJob: Job? = null
+    @Volatile private var isInFollowUpWindow = false
+
+    /**
+     * Transition to SLEEPING state.
+     * JARVIS enters silent standby mode in the background.
+     * Continuous audio streaming is maintained without mic cycling so the mic never toggles on/off.
+     * All background audio/noise is completely muted unless the user says "Jarvis" or "Hey Jarvis".
+     */
+    fun enterSleepingState(sayGoodbye: Boolean = false) {
+        if (conversationState == ConversationState.SLEEPING) return
+        if (screenCaptureEngine != null || cameraVisionEngine?.isCameraStreaming() == true) {
+            Log.d("JarvisVoiceService", "enterSleepingState ignored — screen sharing or camera vision is active.")
+            return
+        }
+        Log.d("JarvisVoiceService", "Entering SLEEPING state (from ${conversationState})")
+        conversationState = ConversationState.SLEEPING
+        currentTurnHasWakeWord = false
+        isInFollowUpWindow = false
+        idleCountdownJob?.cancel()
+        autoSleepJob?.cancel()
+        activeFollowUpJob?.cancel()
+        standbyAudioBuffer.clear()
+        audioEngine?.clearPlaybackQueue()
+
+        if (sayGoodbye) {
+            speakAloud("I am going into silent mode, Sir. Just call me when you need me, 'Hey Jarvis.'")
+        }
+
+        Log.d("JarvisVoiceService", "SLEEPING: Silent background mode active. Mic remains smooth and steady without cycling. Only 'Jarvis' or 'Hey Jarvis' will unmute.")
+    }
+
+    /**
+     * Transition to ACTIVE state.
+     */
+    fun enterActiveState(fromWakeWord: Boolean = false) {
+        val wasState = conversationState
+        conversationState = ConversationState.ACTIVE
+        lastUserSpeechTimeMs = System.currentTimeMillis()
+        isInFollowUpWindow = false
+        idleCountdownJob?.cancel()
+        autoSleepJob?.cancel()
+
+        audioEngine?.setExternalSpeaking(false)
+
+        // Reconnect Gemini if needed (e.g. waking from long idle period)
+        if (geminiLive?.isConnected() != true && isSessionStarted) {
+            Log.d("JarvisVoiceService", "ACTIVE: Gemini not connected, reconnecting...")
+            geminiLive?.connect()
+        }
+
+        // Start the idle timer
+        startIdleTimer()
+
+        if (fromWakeWord && wasState == ConversationState.SLEEPING) {
+            speakAloud("Yes Sir, I'm here!")
+        }
+
+        Log.d("JarvisVoiceService", "ACTIVE: Full conversation mode enabled (was $wasState, wakeWord=$fromWakeWord)")
+    }
+
+    /**
+     * Start the 2-minute idle timer. If no user speech, transitions to SLEEPING.
+     */
+    private fun startIdleTimer() {
+        autoSleepJob?.cancel()
+        autoSleepJob = toolScope.launch {
+            while (true) {
+                delay(15_000L) // Check every 15s
+                val silenceDuration = System.currentTimeMillis() - lastUserSpeechTimeMs
+                if (conversationState == ConversationState.ACTIVE && !isAppInForeground && silenceDuration >= IDLE_TO_SLEEP_MS) {
+                    if (screenCaptureEngine != null || cameraVisionEngine?.isCameraStreaming() == true) {
+                        // Keep awake during active screen sharing or camera vision
+                        continue
+                    }
+                    Log.d("JarvisVoiceService", "Idle timer: ${silenceDuration / 1000}s of silence (not foreground) → transitioning to SLEEPING")
+                    Handler(Looper.getMainLooper()).post { enterSleepingState(sayGoodbye = true) }
+                    return@launch
+                }
+            }
+        }
+    }
+
+    /**
+     * Touch: reset idle timer because the user interacted.
+     */
+    private fun touchUserActivity() {
+        lastUserSpeechTimeMs = System.currentTimeMillis()
+        if (conversationState == ConversationState.IDLE_COUNTDOWN) {
+            conversationState = ConversationState.ACTIVE
+        }
+    }
+
+    /**
+     * Start a 30-second follow-up window (e.g. after launching an app).
+     * During this window, Jarvis responds without requiring wake word.
+     */
+    private fun startFollowUpWindow() {
+        isInFollowUpWindow = true
+        activeFollowUpJob?.cancel()
+        activeFollowUpJob = toolScope.launch {
+            delay(FOLLOW_UP_WINDOW_MS)
+            isInFollowUpWindow = false
+            // If still in background and no activity, let idle timer handle the rest
+        }
+    }
+
+    fun setAppForeground(isForeground: Boolean) {
+        isAppInForeground = isForeground
+        if (isForeground) {
+            // App came to foreground → always go ACTIVE
+            if (conversationState != ConversationState.ACTIVE) {
+                enterActiveState(fromWakeWord = false)
+            } else {
+                touchUserActivity()
+            }
+            Log.d("JarvisVoiceService", "App foregrounded → ACTIVE conversational mode.")
+        } else {
+            // App went to background → start follow-up window then idle timer
+            startFollowUpWindow()
+            startIdleTimer()
+            Log.d("JarvisVoiceService", "App backgrounded → follow-up window + idle timer started.")
+        }
+    }
+
+    private fun isVoicePlaybackAllowed(): Boolean {
+        // While screen sharing or camera vision is active, always allow audio playback
+        if (screenCaptureEngine != null || cameraVisionEngine?.isCameraStreaming() == true) return true
+        // If current turn has wake word: ALWAYS allow!
+        if (currentTurnHasWakeWord) return true
+        // In ACTIVE state: always allow
+        if (conversationState == ConversationState.ACTIVE) return true
+        // In foreground: always allow
+        if (isAppInForeground) return true
+        // In follow-up window (30s after command): allow
+        if (isInFollowUpWindow) return true
+        // In SLEEPING mode / background without wake word: 100% silent!
+        return false
+    }
+
+    private val currentTurnInputText = StringBuilder()
+    private val currentTurnOutputText = StringBuilder()
+    private var currentTurnHasWakeWord = false
+    private var interruptSentThisTurn = false
+
+    private var cachedApiKey = ""
+    private var cachedModelString = "models/gemini-2.5-flash"
+    private var cachedSystemPrompt = ""
+    private var cachedVoiceName = "Kore"
+
+    private val SHUTDOWN_PHRASES = listOf(
+        "turn off yourself", "shut down", "shutdown", "power off",
+        "close yourself", "exit jarvis", "stop jarvis", "turn off",
+        "go offline", "go off", "offline ho jao", "offline jao", "offline ho ja",
+        "jarvis shutdown", "jarvis shut down", "jarvis turn off", "jarvis power off",
+        "jarvis bandh ho jao", "khud ko band karo", "band ho jao",
+        "jarvis off ho jao", "jarvis band ho ja", "band hoja", "band ho ja",
+        "khud ko band kar do", "band kar do", "band karo", "stop listening"
+    )
+
+    private val BACKGROUND_PHRASES = listOf(
+        "jarvis go to the background", "go to the background", "go to background",
+        "jarvis go to background", "go into the background", "jarvis go into the background",
+        "background mode", "minimize yourself", "minimize jarvis", "run in background",
+        "send to background", "background me jao", "peeche chala ja", "background mode me jao",
+        "peeche jao", "background me chalay jao", "background jao", "go background",
+        "background mein jao", "background me ja", "chup ho jao", "chup raho",
+        "बैकग्राउंड में जाओ", "बैकग्राउंड जाओ", "पीछे जाओ", "चुप हो जाओ", "चुप रहो"
+    )
+
+    private val SHOW_YOURSELF_PHRASES = listOf(
+        "show yourself", "show jarvis", "open jarvis", "bring jarvis",
+        "come to front", "come back", "jarvis saamne aao", "saamne aao",
+        "show me yourself", "appear", "maximize yourself", "open app jarvis",
+        "open the app", "open jarvis app", "bring jarvis to front"
+    )
+
+    private fun textHasWakeWord(text: String): Boolean {
+        val cleanText = text.lowercase().trim()
+        if (cleanText.isEmpty()) return false
+        if (WAKE_PHRASES.any { cleanText.contains(it) }) return true
+        val words = cleanText.split("\\s+".toRegex())
+        val singleWordMatches = setOf(
+            "jarvis", "jarviss", "jaarvis", "jarvish", "javis", "service", "travis",
+            "jarwis", "charvis", "chavis", "jervis", "zarvis", "dharvis", "arvis",
+            "jarves", "jarviz", "garvis", "charves", "jarvice", "javiz",
+            "जार्विस", "जारविस", "जरविस", "जरवीस", "जार्विश", "सर्विस", "जार्विज़", "जारविश"
+        )
+        return words.any { w -> singleWordMatches.contains(w) }
+    }
+
+    private fun isShutdownCommand(text: String): Boolean {
+        val normalized = text.lowercase().replace(Regex("[^a-zA-Z0-9\\u0900-\\u097F\\s]"), " ").trim()
+        if (normalized.isEmpty()) return false
+        return SHUTDOWN_PHRASES.any { normalized.contains(it) }
+    }
+
+    private fun isBackgroundCommand(text: String): Boolean {
+        val normalized = text.lowercase().replace(Regex("[^a-zA-Z0-9\\u0900-\\u097F\\s]"), " ").trim()
+        if (normalized.isEmpty()) return false
+        if (BACKGROUND_PHRASES.any { normalized.contains(it) }) return true
+        val bgRegex = Regex("""\b(go|send|run|move)\s+(in|into|to)?\s*(the)?\s*background\b""")
+        return bgRegex.containsMatchIn(normalized)
+    }
+
+    private fun isShowYourselfCommand(text: String): Boolean {
+        val normalized = text.lowercase().replace(Regex("[^a-zA-Z0-9\\s]"), " ").trim()
+        if (normalized.isEmpty()) return false
+        return SHOW_YOURSELF_PHRASES.any { normalized.contains(it) }
+    }
+
+    private val standbyAudioBuffer = java.util.concurrent.ConcurrentLinkedQueue<ByteArray>()
+    @Volatile private var isTurnInterrupted = false
+
+    private fun flushStandbyAudio() {
+        while (!standbyAudioBuffer.isEmpty()) {
+            val b = standbyAudioBuffer.poll() ?: break
+            audioEngine?.queueAudio(b)
+        }
+    }
+
+    /** Resets per-turn bookkeeping, ready for the next utterance. */
+    private fun resetTurnState() {
+        currentTurnInputText.clear()
+        currentTurnOutputText.clear()
+        standbyAudioBuffer.clear()
+        interruptSentThisTurn = false
+        currentTurnHasWakeWord = false
+        isTurnInterrupted = false
+        audioEngine?.setExternalSpeaking(false)
+    }
+
+    override fun onBind(intent: Intent?): IBinder = binder
+
+    override fun onCreate() {
+        super.onCreate()
+        createNotificationChannel()
+        initTextToSpeech()
+    }
+
+    fun performShutdownIntent() {
+        Log.d("JarvisVoiceService", "Executing multilingual ShutdownIntent...")
+        toolScope.launch {
+            try {
+                // Give Gemini a moment to finish speaking its warm goodbye in natural voice
+                delay(2200L)
+            } catch (_: Exception) {}
+            try {
+                geminiLive?.disconnect(manual = true)
+                audioEngine?.stopRecording()
+                audioEngine?.stopPlayback()
+                audioEngine?.release()
+                audioEngine = null
+                com.jarvis.assistant.service.FloatingOrbService.stopService(this@JarvisVoiceService)
+                isSessionStarted = false
+                conversationState = ConversationState.SLEEPING
+                currentTurnHasWakeWord = false
+                dispatchToListeners { it.onShutdownRequested() }
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } catch (e: Exception) {
+                Log.e("JarvisVoiceService", "Error during performShutdownIntent", e)
+            }
+        }
+    }
+
+    private var textToSpeech: android.speech.tts.TextToSpeech? = null
+    @Volatile private var isTtsReady = false
+
+    private fun initTextToSpeech() {
+        if (textToSpeech != null) return
+        try {
+            textToSpeech = android.speech.tts.TextToSpeech(applicationContext) { status ->
+                if (status == android.speech.tts.TextToSpeech.SUCCESS) {
+                    textToSpeech?.language = java.util.Locale.ENGLISH
+                    isTtsReady = true
+                    Log.d("JarvisVoiceService", "TextToSpeech successfully initialized and ready.")
+                } else {
+                    Log.w("JarvisVoiceService", "TextToSpeech init status: $status")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("JarvisVoiceService", "Failed to init TextToSpeech: ${e.message}")
+        }
+    }
+
+    fun performBackgroundModeIntent() {
+        Log.d("JarvisVoiceService", "Executing BackgroundModeIntent — transitioning to SLEEPING state...")
+
+        // Unblock any external speaking flag so mic streams freely
+        audioEngine?.setExternalSpeaking(false)
+
+        // Navigate to Android home screen
+        val startMain = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_HOME)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        com.jarvis.assistant.util.ActivityLauncherHelper.startActivitySafely(this, startMain)
+
+        // Transition to SLEEPING with goodbye message
+        enterSleepingState(sayGoodbye = true)
+    }
+
+    fun performShowYourselfIntent() {
+        Log.d("JarvisVoiceService", "Bringing JARVIS to front...")
+        isAppInForeground = true
+        enterActiveState(fromWakeWord = false)
+        val intent = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+        com.jarvis.assistant.util.ActivityLauncherHelper.startActivitySafely(this, intent)
+        val enableOverlay = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE).getBoolean("enable_floating_overlay", false)
+        if (enableOverlay) {
+            com.jarvis.assistant.service.FloatingOrbService.startService(this)
+        }
+    }
+
+    fun speakAloud(text: String, onDone: (() -> Unit)? = null) {
+        if (text.isBlank()) {
+            onDone?.invoke()
+            return
+        }
+        Log.d("JarvisVoiceService", "System voice message: $text")
+
+        // No UI toast popup — speak strictly via audio
+        initTextToSpeech()
+        audioEngine?.routeToSpeaker()
+
+        val tts = textToSpeech
+        if (tts == null || !isTtsReady) {
+            Log.w("JarvisVoiceService", "TextToSpeech not ready yet, skipping TTS lock")
+            audioEngine?.setExternalSpeaking(false)
+            onDone?.invoke()
+            return
+        }
+
+        audioEngine?.setExternalSpeaking(true)
+        val utteranceId = "jarvis_tts_${System.currentTimeMillis()}"
+        val params = android.os.Bundle().apply {
+            putInt(android.speech.tts.TextToSpeech.Engine.KEY_PARAM_STREAM, android.media.AudioManager.STREAM_MUSIC)
+        }
+
+        val safetyHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        val safetyRunnable = Runnable {
+            audioEngine?.setExternalSpeaking(false)
+            onDone?.invoke()
+        }
+        safetyHandler.postDelayed(safetyRunnable, 4000L)
+
+        tts.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+            override fun onStart(id: String?) {}
+            override fun onDone(id: String?) {
+                safetyHandler.removeCallbacks(safetyRunnable)
+                audioEngine?.setExternalSpeaking(false)
+                onDone?.invoke()
+            }
+            override fun onError(id: String?) {
+                safetyHandler.removeCallbacks(safetyRunnable)
+                audioEngine?.setExternalSpeaking(false)
+                onDone?.invoke()
+            }
+        })
+        val res = tts.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+        if (res != android.speech.tts.TextToSpeech.SUCCESS) {
+            Log.w("JarvisVoiceService", "tts.speak returned non-success code: $res")
+            safetyHandler.removeCallbacks(safetyRunnable)
+            audioEngine?.setExternalSpeaking(false)
+            onDone?.invoke()
+        }
+    }
+
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        try {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Jarvis::VoiceServiceWakeLock")?.apply {
+                setReferenceCounted(false)
+                acquire(24 * 60 * 60 * 1000L) // 24 hours max
+            }
+            Log.d("JarvisVoiceService", "Acquired partial WakeLock for background voice listening")
+        } catch (e: Exception) {
+            Log.e("JarvisVoiceService", "Failed to acquire wakeLock: ${e.message}")
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+                Log.d("JarvisVoiceService", "Released WakeLock")
+            }
+        } catch (e: Exception) {
+            Log.e("JarvisVoiceService", "Failed to release wakeLock: ${e.message}")
+        }
+        wakeLock = null
+    }
+
+    fun ensureMicrophoneForegroundService() {
+        val notification = buildNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            try {
+                var serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                if (screenCaptureEngine != null) {
+                    serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                }
+                if (cameraVisionEngine?.isCameraStreaming() == true) {
+                    serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                }
+                startForeground(NOTIFICATION_ID, notification, serviceType)
+                Log.d("JarvisVoiceService", "startForeground elevated to MICROPHONE | SPECIAL_USE (types=$serviceType)")
+            } catch (e: Exception) {
+                Log.w("JarvisVoiceService", "Could not elevate to MICROPHONE FGS type (likely background): ${e.message}")
+                try {
+                    startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                } catch (e2: Exception) {
+                    Log.e("JarvisVoiceService", "startForeground SPECIAL_USE failed: ${e2.message}")
+                }
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                var serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                if (screenCaptureEngine != null) {
+                    serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                }
+                if (cameraVisionEngine?.isCameraStreaming() == true) {
+                    serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                }
+                startForeground(NOTIFICATION_ID, notification, serviceType)
+            } catch (e: Exception) {
+                Log.w("JarvisVoiceService", "startForeground MICROPHONE failed: ${e.message}")
+                try {
+                    startForeground(NOTIFICATION_ID, notification)
+                } catch (e2: Exception) {
+                    android.util.Log.e("JarvisVoiceService", "startForeground plain failed", e2)
+                }
+            }
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        acquireWakeLock()
+        ensureMicrophoneForegroundService()
+        return START_STICKY
+    }
+
+    /** Restarts the session with updated settings (personality, voice, API key, etc.). */
+    fun restartSession(
+        apiKey: String,
+        modelString: String,
+        systemPrompt: String,
+        voiceName: String
+    ) {
+        if (isSessionStarted) {
+            resetTurnState()
+            geminiLive?.disconnect()
+            audioEngine?.release()
+            geminiLive = null
+            audioEngine = null
+            isSessionStarted = false
+        }
+        startSession(apiKey, modelString, systemPrompt, voiceName)
+    }
+
+    /** Starts the mic/WebSocket session. Safe to call repeatedly; a no-op once already running. */
+    fun startSession(
+        apiKey: String,
+        modelString: String,
+        systemPrompt: String,
+        voiceName: String
+    ) {
+        val effectiveApiKey = apiKey.ifBlank { cachedApiKey }
+        val effectiveModel = modelString.ifBlank { cachedModelString }
+        val effectivePrompt = systemPrompt.ifBlank { cachedSystemPrompt }
+        val effectiveVoice = voiceName.ifBlank { cachedVoiceName }
+
+        if (effectiveApiKey.isNotBlank()) cachedApiKey = effectiveApiKey
+        if (effectiveModel.isNotBlank()) cachedModelString = effectiveModel
+        if (effectivePrompt.isNotBlank()) cachedSystemPrompt = effectivePrompt
+        if (effectiveVoice.isNotBlank()) cachedVoiceName = effectiveVoice
+
+        Log.d("JarvisVoiceService", "startSession called: key len=${effectiveApiKey.length}, model=$effectiveModel, isSessionStarted=$isSessionStarted, hasGeminiLive=${geminiLive != null}")
+
+        if (isSessionStarted && geminiLive != null) return
+        isSessionStarted = true
+
+        acquireWakeLock()
+        ensureMicrophoneForegroundService()
+
+        setVoiceConfig(effectiveVoice)
+        resetTurnState()
+
+        if (audioEngine == null) {
+            audioEngine = AudioEngine(this).apply {
+                onAudioChunkCaptured = { chunk ->
+                    if (!isUserMuted) geminiLive?.sendAudioChunk(chunk)
+                }
+                onAmplitudeChanged = { rms -> dispatchToListeners { it.onAmplitudeChanged(rms) } }
+                onSpeakingStarted = {
+                    dispatchToListeners { it.onSpeakingStarted() }
+                }
+                onSpeakingStopped = {
+                    dispatchToListeners { it.onSpeakingStopped() }
+                }
+                onInterruptTriggered = { interrupt() }
+                setMuted(isUserMuted)
+            }
+        }
+
+        if (effectiveApiKey.isNotBlank()) {
+            geminiLive?.disconnect()
+            geminiLive = GeminiLiveClient(effectiveApiKey, effectiveModel, effectivePrompt, effectiveVoice).apply {
+                onConnected = { dispatchToListeners { it.onConnected() } }
+                onSetupComplete = {
+                    audioEngine?.startRecording()
+                    audioEngine?.startPlayback()
+                    dispatchToListeners { it.onSetupComplete() }
+                }
+                onInterrupted = {
+                    if (audioEngine?.isCurrentlySpeaking() == true) {
+                        isTurnInterrupted = true
+                        standbyAudioBuffer.clear()
+                        audioEngine?.clearPlaybackQueue()
+                        dispatchToListeners { it.onSpeakingStopped() }
+                    }
+                }
+                onAudioReceived = { bytes ->
+                    if (!isUserMuted) {
+                        isTurnInterrupted = false
+                        if (isVoicePlaybackAllowed()) {
+                            flushStandbyAudio()
+                            audioEngine?.queueAudio(bytes)
+                        } else {
+                            // Keep max 50 chunks (~1.0s) rolling standby buffer to preserve
+                            // initial sentence onset while waiting for Google's cloud transcription,
+                            // safely cleared on turn complete if wake word was never detected.
+                            while (standbyAudioBuffer.size >= 50) {
+                                standbyAudioBuffer.poll()
+                            }
+                            standbyAudioBuffer.offer(bytes)
+                        }
+                    }
+                }
+                onInputTranscript = { text ->
+                    if (!isUserMuted) {
+                        isTurnInterrupted = false
+                        currentTurnInputText.append(text)
+                        val fullInput = currentTurnInputText.toString()
+
+                        if (isShutdownCommand(fullInput)) {
+                            performShutdownIntent()
+                        } else if (isShowYourselfCommand(fullInput)) {
+                            performShowYourselfIntent()
+                        } else if (isBackgroundCommand(fullInput)) {
+                            performBackgroundModeIntent()
+                        } else {
+                            if (textHasWakeWord(fullInput)) {
+                                currentTurnHasWakeWord = true
+                                if (conversationState == ConversationState.SLEEPING) {
+                                    enterActiveState(fromWakeWord = true)
+                                } else {
+                                    touchUserActivity()
+                                }
+                                flushStandbyAudio()
+                            }
+                            if (isVoicePlaybackAllowed()) {
+                                touchUserActivity()
+                                dispatchToListeners { it.onInputTranscript(text) }
+                            }
+                        }
+                    }
+                }
+                onOutputTranscript = { text ->
+                    if (!isUserMuted) {
+                        currentTurnOutputText.append(text)
+                        if (!isVoicePlaybackAllowed()) {
+                            val fullInput = currentTurnInputText.toString()
+                            // STRICT: ONLY activate if wake word was actually spoken by the user.
+                            // NEVER activate on ambient speech, singing, or lyrics.
+                            if (textHasWakeWord(fullInput)) {
+                                currentTurnHasWakeWord = true
+                                if (conversationState == ConversationState.SLEEPING) {
+                                    enterActiveState(fromWakeWord = true)
+                                } else {
+                                    touchUserActivity()
+                                }
+                                flushStandbyAudio()
+                            }
+                        }
+                        if (isVoicePlaybackAllowed()) {
+                            dispatchToListeners { it.onOutputTranscript(text) }
+                        }
+                    }
+                }
+                onTurnComplete = {
+                    if (isUserMuted) {
+                        resetTurnState()
+                    } else {
+                        val fullInput = currentTurnInputText.toString()
+                        val hasWakeWord = isVoicePlaybackAllowed() || textHasWakeWord(fullInput)
+                        if (!isVoicePlaybackAllowed() && textHasWakeWord(fullInput)) {
+                            currentTurnHasWakeWord = true
+                            if (conversationState == ConversationState.SLEEPING) {
+                                enterActiveState(fromWakeWord = true)
+                            } else {
+                                touchUserActivity()
+                            }
+                            flushStandbyAudio()
+                        }
+                        val userMsg = fullInput.trim()
+                        val jarvisMsg = currentTurnOutputText.toString().trim()
+
+                        if (hasWakeWord && (userMsg.isNotEmpty() || jarvisMsg.isNotEmpty())) {
+                            val toSave = mutableListOf<com.jarvis.assistant.model.ChatMessage>()
+                            if (userMsg.isNotEmpty()) toSave.add(com.jarvis.assistant.model.ChatMessage(userMsg, isUser = true))
+                            if (jarvisMsg.isNotEmpty()) toSave.add(com.jarvis.assistant.model.ChatMessage(jarvisMsg, isUser = false))
+                            if (toSave.isNotEmpty()) {
+                                com.jarvis.assistant.util.ChatHistoryManager.saveMessages(this@JarvisVoiceService, toSave)
+                            }
+                            dispatchToListeners { it.onTurnComplete() }
+                            touchUserActivity()
+                        } else {
+                            // Turn ignored (ambient noise, singing, conversation without wake word)
+                            standbyAudioBuffer.clear()
+                            audioEngine?.clearPlaybackQueue()
+                            dispatchToListeners { it.onCommandIgnored() }
+                        }
+                        resetTurnState()
+                    }
+                }
+                onDisconnected = {
+                    dispatchToListeners { it.onDisconnected() }
+                    // Auto-recover: if session is supposed to be running, reconnect after a short delay
+                    if (isSessionStarted && geminiLive != null) {
+                        toolScope.launch {
+                            delay(2000L)
+                            if (isSessionStarted && geminiLive?.isConnected() != true) {
+                                Log.w("JarvisVoiceService", "Auto-recovery: session dropped, reconnecting...")
+                                geminiLive?.connect()
+                            }
+                        }
+                    }
+                }
+                onError = { msg -> dispatchToListeners { it.onError(msg) } }
+                onToolCall = { name, args, callId ->
+                    if (!isUserMuted) {
+                        val fullInput = currentTurnInputText.toString()
+                        val isAllowed = isVoicePlaybackAllowed() || textHasWakeWord(fullInput)
+                        if (isAllowed) {
+                            currentTurnHasWakeWord = true
+                            if (conversationState == ConversationState.SLEEPING) {
+                                enterActiveState(fromWakeWord = true)
+                            } else {
+                                touchUserActivity()
+                            }
+                            startFollowUpWindow()
+                            dispatchToListeners { it.onToolCall(name, args, callId) }
+                            toolScope.launch { handleToolCall(name, args, callId) }
+                        } else {
+                            Log.d("JarvisVoiceService", "Background tool call '$name' ignored without wake word.")
+                            geminiLive?.sendToolResponse(callId, name, JSONObject().put("status", "ignored_background_mode"))
+                        }
+                    }
+                }
+            }
+            geminiLive?.connect()
+            startConnectionHealthCheck()
+        } else {
+            audioEngine?.startRecording()
+            audioEngine?.startPlayback()
+            dispatchToListeners { it.onConnected() }
+            dispatchToListeners { it.onSetupComplete() }
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Tool execution — runs here (not in MainActivity) so voice commands
+    // like "open YouTube" or "pause it" still work even when the Activity
+    // is backgrounded, e.g. while the user is already inside another app.
+    // ---------------------------------------------------------------
+
+    private suspend fun handleToolCall(name: String, args: JSONObject, callId: String) {
+        val result = JSONObject()
+        try {
+            when (name) {
+                "open_app" -> {
+                    val appName = args.optString("app_name", "")
+                    val appNumber = if (args.has("app_number")) args.optInt("app_number", 0) else null
+                    if (appName.isBlank()) {
+                        result.put("success", false)
+                        result.put("message", "App name cannot be empty.")
+                    } else {
+                        val res = AppLauncher.openAppResult(this, appName, if (appNumber != null && appNumber > 0) appNumber else null)
+                        when (res) {
+                            is AppLauncher.OpenAppResult.Success -> {
+                                result.put("success", true)
+                                result.put("opened_app", res.app.label)
+                                appNumber?.let { num ->
+                                    if (num > 0) {
+                                        JarvisAccessibilityService.instance?.handleDualAppSelection(appName, num)
+                                    }
+                                }
+                            }
+                            is AppLauncher.OpenAppResult.MultipleFound -> {
+                                result.put("success", false)
+                                result.put("multiple_apps", true)
+                                result.put("count", res.matches.size)
+                                result.put("app_name", appName)
+                                result.put(
+                                    "message",
+                                    "In your mobile there are ${res.matches.size} $appName apps. Ask the user in their language: \"In your mobile there are ${res.matches.size} $appName apps. Which one should I open, 1 or 2?\""
+                                )
+                            }
+                            is AppLauncher.OpenAppResult.NotFound -> {
+                                result.put("success", false)
+                                result.put("message", "No app matching \"$appName\" was found.")
+                            }
+                            AppLauncher.OpenAppResult.Failure -> {
+                                result.put("success", false)
+                                result.put("message", "Failed to launch \"$appName\".")
+                            }
+                        }
+                    }
+                }
+                "search_and_play_youtube" -> {
+                    val query = args.optString("query", "")
+                    val play = YouTubeController.searchAndPlay(this, query)
+                    result.put("success", play.success)
+                    play.title?.let { result.put("playing", it) }
+                    play.message?.let { result.put("message", it) }
+                }
+                "search_youtube" -> {
+                    val query = args.optString("query", "")
+                    val searchRes = YouTubeController.searchYouTube(this, query)
+                    result.put("success", searchRes.success)
+                    searchRes.message?.let { result.put("message", it) }
+                }
+                "media_playback_control" -> {
+                    val action = args.optString("action", "")
+                    val ok = YouTubeController.sendMediaKey(this, action)
+                    result.put("success", ok)
+                    if (!ok) result.put("message", "Couldn't send the $action command — nothing seems to be playing.")
+                }
+                "youtube_accessibility_action" -> {
+                    val action = args.optString("action", "")
+                    val svc = JarvisAccessibilityService.instance
+                    if (svc == null) {
+                        result.put("success", false)
+                        result.put("message", "Accessibility isn't enabled for JARVIS yet — ask the user to turn it on in Settings > Accessibility.")
+                    } else {
+                        val ok = when (action) {
+                            "skip_ad" -> svc.skipAd()
+                            "like" -> svc.likeVideo()
+                            "subscribe" -> svc.subscribeChannel()
+                            "open_channel" -> svc.openChannel()
+                            "seek_forward" -> svc.seekForward()
+                            "seek_backward" -> svc.seekBackward()
+                            "fullscreen" -> svc.toggleFullscreen()
+                            else -> false
+                        }
+                        result.put("success", ok)
+                        if (!ok) result.put("message", "Couldn't find that control on screen right now.")
+                    }
+                }
+                "call_contact" -> {
+                    val contactName = args.optString("contact_name", "")
+                        .ifBlank { args.optString("name", "") }
+                        .ifBlank { args.optString("query", "") }
+                        .ifBlank { args.optString("contact", "") }
+                        .ifBlank { args.optString("number", "") }
+                    when (val callResult = ContactCaller.callContact(this, contactName)) {
+                        is ContactCaller.CallResult.Success -> {
+                            speakAloud("Okay sir, calling ${callResult.contact.name}.")
+                            monitorPhoneCallAndKeepQuiet()
+                            result.put("success", true)
+                            result.put("calling", callResult.contact.name)
+                        }
+                        is ContactCaller.CallResult.NoMatch -> {
+                            result.put("success", false)
+                            result.put("message", "No contact matching \"${callResult.query}\" was found.")
+                        }
+                        is ContactCaller.CallResult.MultipleMatches -> {
+                            val names = callResult.matches.map { it.name }.distinct().joinToString(", ")
+                            result.put("success", false)
+                            result.put("message", "Found more than one match for \"${callResult.query}\": $names. Ask the user which one they meant.")
+                        }
+                        ContactCaller.CallResult.MissingPermission -> {
+                            result.put("success", false)
+                            result.put("message", "JARVIS doesn't have Contacts/Phone permission yet — ask the user to grant it in Settings.")
+                        }
+                        ContactCaller.CallResult.CallFailed -> {
+                            result.put("success", false)
+                            result.put("message", "Found the contact but couldn't place the call.")
+                        }
+                    }
+                }
+                "send_whatsapp_message" -> {
+                    val recipientName = args.optString("recipient_name", "")
+                        .ifBlank { args.optString("contact_name", "") }
+                        .ifBlank { args.optString("name", "") }
+                    val message = args.optString("message", "")
+                        .ifBlank { args.optString("text", "") }
+                    val appNumber = if (args.has("app_number")) args.optInt("app_number", 0).takeIf { it in 1..2 } else null
+                    val confirmed = args.optBoolean("confirmed", false)
+
+                    when (val res = com.jarvis.assistant.util.WhatsAppMessenger.sendMessage(this, recipientName, message, appNumber, confirmed)) {
+                        is com.jarvis.assistant.util.WhatsAppMessenger.SendResult.Success -> {
+                            result.put("success", true)
+                            result.put("message", "Sending message to ${res.contactName} via ${res.appName}.")
+                        }
+                        is com.jarvis.assistant.util.WhatsAppMessenger.SendResult.RequiresConfirmation -> {
+                            result.put("success", false)
+                            result.put("requires_confirmation", true)
+                            result.put("contact_name", res.contactName)
+                            result.put("message", "Found contact \"${res.contactName}\". Ask user: \"Is this ${res.contactName} contact to send a message?\" (or in Hindi: \"Kya main ${res.contactName} ko ye message bhej doon?\"). When user confirms yes, call send_whatsapp_message(recipient_name=\"${res.contactName}\", message=\"${res.message}\", confirmed=true).")
+                        }
+                        is com.jarvis.assistant.util.WhatsAppMessenger.SendResult.MultipleAppsFound -> {
+                            result.put("success", false)
+                            result.put("multiple_apps", true)
+                            result.put("message", "In your mobile there are 2 WhatsApp apps. Ask user: \"In your mobile there are 2 WhatsApp apps. Which one should I use, 1 or 2?\"")
+                        }
+                        is com.jarvis.assistant.util.WhatsAppMessenger.SendResult.ContactNotFound -> {
+                            result.put("success", false)
+                            result.put("message", "Could not find any contact named \"${res.name}\" in phone contacts.")
+                        }
+                        is com.jarvis.assistant.util.WhatsAppMessenger.SendResult.MultipleContactsFound -> {
+                            val matchesList = res.matches.joinToString(", ")
+                            result.put("success", false)
+                            result.put("message", "Multiple contacts found for \"${res.name}\": $matchesList. Ask user which person to message.")
+                        }
+                        com.jarvis.assistant.util.WhatsAppMessenger.SendResult.MissingPermission -> {
+                            result.put("success", false)
+                            result.put("message", "Contacts permission is required to read contact phone numbers.")
+                        }
+                        is com.jarvis.assistant.util.WhatsAppMessenger.SendResult.Error -> {
+                            result.put("success", false)
+                            result.put("message", res.reason)
+                        }
+                    }
+                }
+                "whatsapp_call" -> {
+                    val recipientName = args.optString("recipient_name", "")
+                        .ifBlank { args.optString("contact_name", "") }
+                        .ifBlank { args.optString("name", "") }
+                    val callType = args.optString("call_type", "voice")
+                    val appNumber = if (args.has("app_number")) args.optInt("app_number", 0).takeIf { it in 1..2 } else null
+                    val confirmed = args.optBoolean("confirmed", false)
+
+                    when (val res = com.jarvis.assistant.util.WhatsAppMessenger.placeCall(this, recipientName, callType, appNumber, confirmed)) {
+                        is com.jarvis.assistant.util.WhatsAppMessenger.CallResult.Success -> {
+                            result.put("success", true)
+                            result.put("message", "Connecting WhatsApp ${res.callType} call to ${res.contactName} via ${res.appName}.")
+                        }
+                        is com.jarvis.assistant.util.WhatsAppMessenger.CallResult.RequiresConfirmation -> {
+                            result.put("success", false)
+                            result.put("requires_confirmation", true)
+                            result.put("contact_name", res.contactName)
+                            result.put("call_type", res.callType)
+                            val callPrompt = if (res.callType == "video") "Should I start a WhatsApp video call to ${res.contactName}?" else "Should I call ${res.contactName} on WhatsApp?"
+                            result.put("message", "Found contact \"${res.contactName}\". Ask user: \"$callPrompt\" (or in Hindi: \"Kya main ${res.contactName} ko WhatsApp call karoon?\"). When user confirms yes, call whatsapp_call(recipient_name=\"${res.contactName}\", call_type=\"${res.callType}\", confirmed=true).")
+                        }
+                        is com.jarvis.assistant.util.WhatsAppMessenger.CallResult.MultipleAppsFound -> {
+                            result.put("success", false)
+                            result.put("multiple_apps", true)
+                            result.put("message", "In your mobile there are 2 WhatsApp apps. Ask user: \"In your mobile there are 2 WhatsApp apps. Which one should I use, 1 or 2?\"")
+                        }
+                        is com.jarvis.assistant.util.WhatsAppMessenger.CallResult.ContactNotFound -> {
+                            result.put("success", false)
+                            result.put("message", "Could not find any contact named \"${res.name}\" in phone contacts.")
+                        }
+                        is com.jarvis.assistant.util.WhatsAppMessenger.CallResult.MultipleContactsFound -> {
+                            val matchesList = res.matches.joinToString(", ")
+                            result.put("success", false)
+                            result.put("message", "Multiple contacts found for \"${res.name}\": $matchesList. Ask user which person to call.")
+                        }
+                        com.jarvis.assistant.util.WhatsAppMessenger.CallResult.MissingPermission -> {
+                            result.put("success", false)
+                            result.put("message", "Contacts permission is required to read contact phone numbers.")
+                        }
+                        is com.jarvis.assistant.util.WhatsAppMessenger.CallResult.Error -> {
+                            result.put("success", false)
+                            result.put("message", res.reason)
+                        }
+                    }
+                }
+                "set_volume" -> {
+                    val ok = adjustVolume(args)
+                    result.put("success", ok)
+                }
+                "set_brightness" -> {
+                    val ok = adjustBrightness(args)
+                    result.put("success", ok)
+                }
+                "search_playstore_and_install" -> {
+                    val appName = args.optString("app_name", "").ifBlank { args.optString("query", "") }
+                    val cleanAppQuery = appName.replace("download", "", ignoreCase = true).replace("install", "", ignoreCase = true).trim()
+
+                    toolScope.launch {
+                        val knownPkg = resolvePlayStorePackageName(appName)
+                        val playStoreUri = if (knownPkg != null) {
+                            Uri.parse("market://details?id=$knownPkg")
+                        } else {
+                            val encoded = Uri.encode(cleanAppQuery.ifBlank { appName })
+                            Uri.parse("market://search?q=$encoded&c=apps")
+                        }
+
+                        val playStoreIntent = Intent(Intent.ACTION_VIEW, playStoreUri).apply {
+                            setPackage("com.android.vending")
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        val launched = try {
+                            startActivity(playStoreIntent)
+                            true
+                        } catch (e: Exception) {
+                            val marketFallbackIntent = Intent(Intent.ACTION_VIEW, playStoreUri).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            try { startActivity(marketFallbackIntent); true } catch (e3: Exception) { false }
+                        }
+                        if (launched) {
+                            if (JarvisAccessibilityService.isEnabled()) {
+                                JarvisAccessibilityService.instance?.startAutoInstallScanner(cleanAppQuery.ifBlank { appName })
+                            }
+                        }
+                    }
+
+                    result.put("success", true)
+                    result.put("message", "Opening Google Play Store for $appName and starting auto-installer.")
+                }
+                "create_website" -> {
+                    val websiteName = args.optString("website_name", "").ifBlank { args.optString("name", "JarvisWebsite") }
+                    val businessDesc = args.optString("business_description", "").ifBlank { websiteName }
+                    val openRouterKey = com.jarvis.assistant.util.OpenRouterWebsiteGenerator.getApiKey(this)
+
+                    if (openRouterKey.isBlank()) {
+                        val noKeyMsg = "Sir, please add your OpenRouter API key in Settings under Website Builder to create websites."
+                        speakAloud(noKeyMsg)
+                        result.put("success", false)
+                        result.put("message", noKeyMsg)
+                    } else {
+                        val startMsg = "Oh yeah Sir, I have started coding your $websiteName website!"
+                        speakAloud(startMsg)
+                        result.put("success", true)
+                        result.put("message", startMsg)
+
+                        toolScope.launch {
+                            delay(2000L)
+
+                            val overlayIntent = Intent(this@JarvisVoiceService, com.jarvis.assistant.service.WebsiteOverlayService::class.java).apply {
+                                action = com.jarvis.assistant.service.WebsiteOverlayService.ACTION_SHOW
+                                putExtra(com.jarvis.assistant.service.WebsiteOverlayService.EXTRA_WEBSITE_NAME, websiteName)
+                            }
+                            try {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                    startForegroundService(overlayIntent)
+                                } else {
+                                    startService(overlayIntent)
+                                }
+                            } catch (e: Exception) {
+                                Log.e("JarvisVoiceService", "startForegroundService overlay failed", e)
+                            }
+
+                            val genRes = com.jarvis.assistant.util.OpenRouterWebsiteGenerator.generateWebsite(
+                                context = this@JarvisVoiceService,
+                                websiteName = websiteName,
+                                businessDescription = businessDesc
+                            )
+
+                            delay(500L)
+                            if (genRes.success) {
+                                speakAloud("Sir, I have finished coding your website! Please check your mobile screen.")
+                            } else {
+                                speakAloud("Sir, website creation encountered an issue: ${genRes.message}")
+                            }
+                        }
+                    }
+                }
+                "open_website" -> {
+                    val rawUrlsArray = args.optJSONArray("urls")
+                    val query = args.optString("query", "")
+                    val targetUrls = mutableListOf<String>()
+
+                    if (rawUrlsArray != null && rawUrlsArray.length() > 0) {
+                        for (i in 0 until rawUrlsArray.length()) {
+                            val u = rawUrlsArray.optString(i, "").trim()
+                            if (u.isNotEmpty()) {
+                                val extracted = extractUrlsFromText(u)
+                                if (extracted.isNotEmpty()) targetUrls.addAll(extracted)
+                                else targetUrls.add(u)
+                            }
+                        }
+                    }
+
+                    if (targetUrls.isEmpty() && query.isNotBlank()) {
+                        targetUrls.addAll(extractUrlsFromText(query))
+                    }
+
+                    if (targetUrls.isEmpty() && query.isNotBlank()) {
+                        val single = parseTargetUrl(query)
+                        if (single != null) targetUrls.add(single)
+                    }
+
+                    if (targetUrls.isEmpty() && query.isNotBlank()) {
+                        targetUrls.add("https://www.google.com/search?q=${Uri.encode(query)}")
+                    }
+
+                    val ok = openUrlsInChromeTabs(targetUrls)
+                    result.put("success", ok)
+                    if (ok) {
+                        if (targetUrls.size > 1) {
+                            result.put("message", "Opened ${targetUrls.size} websites in separate Chrome tabs: ${targetUrls.joinToString(", ")}.")
+                        } else {
+                            result.put("message", "Opened ${targetUrls.firstOrNull() ?: "website"} in Chrome.")
+                        }
+                    } else {
+                        result.put("message", "I couldn't open the websites, Sir.")
+                    }
+                }
+                "search_in_chrome" -> {
+                    val query = args.optString("query", "")
+                    val extracted = extractUrlsFromText(query)
+
+                    if (extracted.isNotEmpty()) {
+                        val ok = openUrlsInChromeTabs(extracted)
+                        result.put("success", ok)
+                        if (ok) {
+                            if (extracted.size > 1) {
+                                result.put("message", "Opened ${extracted.size} websites in separate Chrome tabs: ${extracted.joinToString(", ")}.")
+                            } else {
+                                result.put("message", "Opened ${extracted.first()} in Chrome.")
+                            }
+                        } else {
+                            result.put("message", "I couldn't open the websites, Sir.")
+                        }
+                    } else {
+                        val targetUrl = parseTargetUrl(query)
+                        val encoded = Uri.encode(query)
+                        val searchUrl = targetUrl ?: "https://www.google.com/search?q=$encoded"
+                        val ok = openUrlsInChromeTabs(listOf(searchUrl))
+                        result.put("success", ok)
+                        if (ok) {
+                            if (targetUrl != null) {
+                                result.put("message", "Opened $targetUrl in Chrome.")
+                            } else {
+                                result.put("message", "Searched \"$query\" in Chrome.")
+                            }
+                        } else {
+                            result.put("message", "I couldn't open that, Sir.")
+                        }
+                    }
+                }
+                "download_song" -> {
+                    val songName = args.optString("song_name", "").ifBlank { args.optString("query", "") }
+                    val artist = args.optString("artist", "")
+                    val fullQuery = if (artist.isNotBlank()) "$songName $artist" else songName
+                    val searchQuery = "pagalnew.com $fullQuery"
+                    val encoded = Uri.encode(searchQuery)
+                    val chromeSearchUrl = "https://www.google.com/search?q=$encoded"
+
+                    val chromeIntent = Intent(Intent.ACTION_VIEW, Uri.parse(chromeSearchUrl)).apply {
+                        setPackage("com.android.chrome")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    val launched = try {
+                        startActivity(chromeIntent)
+                        true
+                    } catch (e: Exception) {
+                        val fallbackIntent = Intent(Intent.ACTION_VIEW, Uri.parse(chromeSearchUrl)).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        try { startActivity(fallbackIntent); true } catch (e2: Exception) { false }
+                    }
+
+                    // Perform background research & download via DownloadManager targeting pagalnew.com
+                    toolScope.launch {
+                        val songRes = com.jarvis.assistant.util.SongDownloader.checkAndDownloadPagalNew(this@JarvisVoiceService, fullQuery)
+                        if (songRes.isAvailable) {
+                            if (JarvisAccessibilityService.isEnabled()) {
+                                JarvisAccessibilityService.instance?.startPagalNewSongScanner(songName)
+                            }
+                        } else {
+                            // Song is not available on pagalnew.com: SPEAK ALOUD exact apology and redirect to home screen
+                            val apologyMsg = "Sorry sir, you asked me to download $fullQuery. It is not available so please I am sorry."
+                            speakAloud(apologyMsg) {
+                                val accSvc = JarvisAccessibilityService.instance
+                                if (accSvc != null) {
+                                    accSvc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
+                                } else {
+                                    val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+                                        addCategory(Intent.CATEGORY_HOME)
+                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                    }
+                                    try { startActivity(homeIntent) } catch (e: Exception) {}
+                                }
+                            }
+                        }
+                    }
+
+                    result.put("success", launched)
+                    result.put("message", "Opened Chrome for pagalnew.com $fullQuery research.")
+                }
+                "play_music" -> {
+                    val songName = args.optString("song_name", "").ifBlank { args.optString("query", "") }.ifBlank { args.optString("title", "") }
+                    if (songName.isNotBlank()) {
+                        val intent = Intent(Intent.ACTION_SEARCH).apply {
+                            setPackage("com.google.android.youtube")
+                            putExtra("query", songName)
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        }
+                        try {
+                            startActivity(intent)
+                            result.put("success", true)
+                            result.put("message", "Opening YouTube for $songName.")
+                        } catch (e: Exception) {
+                            val webIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://www.youtube.com/results?search_query=" + java.net.URLEncoder.encode(songName, "UTF-8"))).apply {
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            }
+                            startActivity(webIntent)
+                            result.put("success", true)
+                            result.put("message", "Opening YouTube web for $songName.")
+                        }
+                    } else {
+                        result.put("success", false)
+                        result.put("message", "Song name was empty.")
+                    }
+                }
+                "tap_screen_by_text" -> {
+                    val text = args.optString("text", "")
+                    val svc = JarvisAccessibilityService.instance
+                    if (svc == null) {
+                        result.put("success", false)
+                        result.put("message", "Accessibility Service is not enabled yet — ask user to enable it in Settings > Accessibility.")
+                    } else {
+                        val ok = svc.clickNodeWithText(text)
+                        result.put("success", ok)
+                        if (!ok) result.put("message", "Could not find clickable text \"$text\" on screen.")
+                    }
+                }
+                "tap_screen_coordinates" -> {
+                    val x = args.optInt("x_percent", 50)
+                    val y = args.optInt("y_percent", 50)
+                    val svc = JarvisAccessibilityService.instance
+                    if (svc == null) {
+                        result.put("success", false)
+                        result.put("message", "Accessibility Service is not enabled.")
+                    } else {
+                        val ok = svc.tapAtPercentage(x.toFloat(), y.toFloat())
+                        result.put("success", ok)
+                    }
+                }
+                "type_text" -> {
+                    val textToType = args.optString("text", "")
+                    val svc = JarvisAccessibilityService.instance
+                    if (svc == null) {
+                        result.put("success", false)
+                        result.put("message", "Accessibility Service is not enabled.")
+                    } else {
+                        val ok = svc.typeText(textToType)
+                        result.put("success", ok)
+                        if (!ok) result.put("message", "No input text field currently focused.")
+                    }
+                }
+                "perform_device_gesture" -> {
+                    val gesture = args.optString("gesture", "home")
+                    val svc = JarvisAccessibilityService.instance
+                    if (svc == null) {
+                        result.put("success", false)
+                        result.put("message", "Accessibility Service is not enabled.")
+                    } else {
+                        val ok = svc.performSystemGesture(gesture)
+                        result.put("success", ok)
+                    }
+                }
+                "builtin_chrome_search" -> {
+                    val query = args.optString("query", "")
+                    withContext(Dispatchers.Main) {
+                        dispatchToListeners { it.onResearchStateChanged(true, query) }
+                    }
+                    val searchResult = com.jarvis.assistant.util.BuiltInChromeEngine.searchAndExtract(query)
+                    withContext(Dispatchers.Main) {
+                        dispatchToListeners { it.onResearchStateChanged(false, "") }
+                    }
+                    result.put("success", true)
+                    result.put("web_research_result", searchResult)
+                }
+                "unlock_app_lock" -> {
+                    val passcode = args.optString("passcode", "").ifBlank { args.optString("pin", "") }
+                    val svc = JarvisAccessibilityService.instance
+                    if (svc == null) {
+                        result.put("success", false)
+                        result.put("message", "Accessibility Service is not enabled yet — ask user to enable it in Settings > Accessibility.")
+                    } else {
+                        val ok = svc.unlockAppLock(passcode)
+                        result.put("success", ok)
+                        if (ok) {
+                            result.put("message", "Entered passcode '$passcode' to unlock the app lock screen.")
+                        } else {
+                            result.put("message", "Tried entering passcode '$passcode' on screen, but could not locate password field or keypad buttons.")
+                        }
+                    }
+                }
+                "delete_whatsapp_message" -> {
+                    val target = args.optString("delete_target", "everyone")
+                    val svc = JarvisAccessibilityService.instance
+                    if (svc == null) {
+                        result.put("success", false)
+                        result.put("message", "Accessibility Service is not enabled yet — ask user to enable it in Settings > Accessibility.")
+                    } else {
+                        val ok = svc.deleteWhatsAppMessage(target)
+                        result.put("success", ok)
+                        result.put("message", if (ok) "Deleted WhatsApp message for $target." else "Could not delete WhatsApp message.")
+                    }
+                }
+                "smart_screen_scroll" -> {
+                    val action = args.optString("action", "scroll_down")
+                    val svc = JarvisAccessibilityService.instance
+                    if (svc == null) {
+                        result.put("success", false)
+                        result.put("message", "Accessibility Service is not enabled.")
+                    } else {
+                        val ok = svc.smartScroll(action)
+                        result.put("success", ok)
+                        result.put("message", if (ok) "Executed scroll action: $action." else "Scroll action failed.")
+                    }
+                }
+                "set_alarm" -> {
+                    val hour = args.optInt("hour", 0)
+                    val minute = args.optInt("minute", 0)
+                    val label = args.optString("label", "JARVIS Alarm")
+                    val (ok, msg) = com.jarvis.assistant.util.AlarmTimerManager.setAlarm(this, hour, minute, label)
+                    result.put("success", ok)
+                    result.put("message", msg)
+                }
+                "set_timer" -> {
+                    val seconds = args.optInt("seconds", 60)
+                    val label = args.optString("label", "JARVIS Timer")
+                    val (ok, msg) = com.jarvis.assistant.util.AlarmTimerManager.setTimer(this, seconds, label)
+                    result.put("success", ok)
+                    result.put("message", msg)
+                }
+                "set_reminder" -> {
+                    val title = args.optString("title", "Reminder")
+                    val delayMins = args.optInt("delay_minutes", 10)
+                    val (ok, msg) = com.jarvis.assistant.util.AlarmTimerManager.setReminder(this, title, delayMins)
+                    result.put("success", ok)
+                    result.put("message", msg)
+                }
+                "get_system_info" -> {
+                    val queryType = args.optString("query_type", "all")
+                    val city = args.optString("city", "")
+                    val info = com.jarvis.assistant.util.SystemInfoManager.getSystemSummary(this, queryType, city)
+                    result.put("success", true)
+                    result.put("system_info", info)
+                }
+                "control_camera" -> {
+                    val action = args.optString("action", "take_photo")
+                    val (ok, msg) = com.jarvis.assistant.util.CameraManagerHelper.captureDirectPhoto(this, action)
+                    result.put("success", ok)
+                    result.put("message", msg)
+                }
+                "analyze_scene" -> {
+                    val mode = args.optString("mode", "full_analysis")
+                    if (!isCameraVisionActive() && !isScreenSharing()) {
+                        startCameraVision(useFront = false)
+                    }
+                    val promptText = when (mode) {
+                        "read_text" -> "[SYSTEM COMMAND] Perform OCR: read all text visible in the current camera/screen view out loud to the user."
+                        "object_recognition" -> "[SYSTEM COMMAND] Identify and describe the main objects currently visible in the camera/screen view."
+                        "describe_scene" -> "[SYSTEM COMMAND] Describe the current scene and context in full detail to the user."
+                        else -> "[SYSTEM COMMAND] Provide a full visual analysis: read any text, identify objects, and describe the scene context."
+                    }
+                    geminiLive?.sendText(promptText)
+                    result.put("success", true)
+                    result.put("message", "Analyzing scene: $mode.")
+                }
+                "control_flashlight" -> {
+                    val action = args.optString("action", "toggle")
+                    val level = if (args.has("brightness_level")) args.optInt("brightness_level", -1).takeIf { it > 0 } else null
+                    val (ok, msg) = com.jarvis.assistant.util.FlashlightController.controlFlashlight(this, action, level)
+                    result.put("success", ok)
+                    result.put("message", msg)
+                }
+                "control_wifi" -> {
+                    val action = args.optString("action", "on").lowercase().trim()
+                    val ssid = args.optString("ssid", "").trim()
+                    val password = args.optString("password", "").trim()
+
+                    when (action) {
+                        "connect" -> {
+                            val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.connectToWifi(this, ssid, password)
+                            result.put("success", ok)
+                            result.put("message", msg)
+                        }
+                        "status" -> {
+                            val status = com.jarvis.assistant.util.DeviceSettingsController.getWifiStatus(this)
+                            result.put("success", true)
+                            result.put("message", status)
+                            result.put("wifi_status", status)
+                        }
+                        else -> {
+                            val enable = (action == "on")
+                            val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.setWifiEnabled(this, enable) { verifiedOk, verifiedMsg ->
+                                speakAloud(verifiedMsg)
+                            }
+                            result.put("success", ok)
+                            result.put("message", msg)
+                        }
+                    }
+                }
+                "control_bluetooth" -> {
+                    val action = args.optString("action", "on").lowercase().trim()
+                    val deviceName = args.optString("device_name", "").trim()
+
+                    when (action) {
+                        "connect" -> {
+                            val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.connectToBluetoothDevice(this, deviceName)
+                            result.put("success", ok)
+                            result.put("message", msg)
+                        }
+                        "status" -> {
+                            val status = com.jarvis.assistant.util.DeviceSettingsController.getBluetoothStatus(this)
+                            result.put("success", true)
+                            result.put("message", status)
+                            result.put("bluetooth_status", status)
+                        }
+                        else -> {
+                            val enable = (action == "on")
+                            val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.setBluetoothEnabled(this, enable) { verifiedOk, verifiedMsg ->
+                                speakAloud(verifiedMsg)
+                            }
+                            result.put("success", ok)
+                            result.put("message", msg)
+                        }
+                    }
+                }
+                "control_hotspot" -> {
+                    val action = args.optString("action", "on").lowercase().trim()
+                    if (action == "get_password") {
+                        val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.getHotspotPassword(this)
+                        result.put("success", ok)
+                        result.put("message", msg)
+                    } else {
+                        val enable = (action == "on")
+                        val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.toggleHotspot(this, enable)
+                        result.put("success", ok)
+                        result.put("message", msg)
+                    }
+                }
+                "control_battery_optimization" -> {
+                    val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.requestIgnoreBatteryOptimizations(this)
+                    result.put("success", ok)
+                    result.put("message", msg)
+                }
+                "switch_sim_network" -> {
+                    val slot = args.optInt("sim_slot", 1)
+                    val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.switchMobileDataSim(this, slot)
+                    result.put("success", ok)
+                    result.put("message", msg)
+                }
+                "control_developer_options" -> {
+                    val action = args.optString("action", "open").lowercase().trim()
+                    when {
+                        action.contains("wireless") -> {
+                            val enable = !action.contains("disable")
+                            val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.controlDeveloperOption(this, "wireless debugging", enable) { verifiedOk, verifiedMsg ->
+                                speakAloud(verifiedMsg)
+                            }
+                            result.put("success", ok)
+                            result.put("message", msg)
+                        }
+                        action.contains("usb") -> {
+                            val enable = !action.contains("disable")
+                            val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.controlDeveloperOption(this, "usb debugging", enable) { verifiedOk, verifiedMsg ->
+                                speakAloud(verifiedMsg)
+                            }
+                            result.put("success", ok)
+                            result.put("message", msg)
+                        }
+                        else -> {
+                            val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.openDeveloperOptions(this)
+                            result.put("success", ok)
+                            result.put("message", msg)
+                        }
+                    }
+                }
+                "control_system_settings" -> {
+                    val setting = args.optString("setting", "settings")
+                    val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.openSystemSetting(this, setting)
+                    result.put("success", ok)
+                    result.put("message", msg)
+                }
+                "show_code_preview_bar", "open_code_review_bar" -> {
+                    val overlayIntent = Intent(this@JarvisVoiceService, com.jarvis.assistant.service.WebsiteOverlayService::class.java).apply {
+                        action = com.jarvis.assistant.service.WebsiteOverlayService.ACTION_SHOW
+                    }
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(overlayIntent)
+                        } else {
+                            startService(overlayIntent)
+                        }
+                    } catch (e: Exception) {
+                        Log.e("JarvisVoiceService", "startForegroundService overlay failed", e)
+                    }
+                    result.put("success", true)
+                    result.put("message", "Re-opened website code preview bar overlay on screen.")
+                }
+                "control_floating_orb" -> {
+                    val action = args.optString("action", "off").lowercase()
+                    if (action == "off" || action == "hide") {
+                        com.jarvis.assistant.service.FloatingOrbService.stopService(this@JarvisVoiceService)
+                        val msg = "Floating Voice Orb turned off, sir. I am running and talking in the background."
+                        result.put("success", true)
+                        result.put("message", msg)
+                    } else {
+                        com.jarvis.assistant.service.FloatingOrbService.startService(this@JarvisVoiceService)
+                        val msg = "Floating Voice Orb turned back on, sir."
+                        result.put("success", true)
+                        result.put("message", msg)
+                    }
+                }
+                "send_to_background", "go_to_background" -> {
+                    result.put("success", true)
+                    result.put("message", "Going to background standby mode.")
+                    Handler(Looper.getMainLooper()).post { performBackgroundModeIntent() }
+                }
+                "show_yourself" -> {
+                    val msg = "I have brought the JARVIS interface to the front screen, Sir."
+                    result.put("success", true)
+                    result.put("message", msg)
+                    Handler(Looper.getMainLooper()).post { performShowYourselfIntent() }
+                }
+                "shutdown_jarvis" -> {
+                    result.put("success", true)
+                    result.put("message", "JARVIS is turning off. Goodbye!")
+                    Handler(Looper.getMainLooper()).post { performShutdownIntent() }
+                }
+                else -> {
+                    result.put("success", false)
+                    result.put("message", "Unknown tool: $name")
+                }
+            }
+        } catch (e: Exception) {
+            val errorDetail = "Tool '$name' failed: ${e.javaClass.simpleName}: ${e.message}"
+            android.util.Log.e("JarvisVoiceService", errorDetail, e)
+            result.put("success", false)
+            result.put("message", errorDetail)
+            dispatchToListeners { it.onError(errorDetail) }
+        }
+        sendToolResponse(callId, name, result)
+    }
+
+    private fun parseIntegerFromAny(obj: Any?): Int {
+        if (obj == null) return -1
+        if (obj is Int) return obj
+        if (obj is Double) return obj.toInt()
+        if (obj is Long) return obj.toInt()
+        if (obj is Float) return obj.toInt()
+        if (obj is String) {
+            val digits = obj.replace(Regex("[^0-9]"), "")
+            if (digits.isNotEmpty()) {
+                return digits.toIntOrNull() ?: -1
+            }
+        }
+        return -1
+    }
+
+    private fun adjustVolume(args: JSONObject): Boolean {
+        return try {
+            val rawAction = args.optString("action", "").lowercase()
+            val rawDir = args.optString("direction", "").lowercase()
+            val rawMode = args.optString("mode", "").lowercase()
+            val combinedStr = "$rawAction $rawDir $rawMode".lowercase()
+
+            Log.d("JarvisVoiceService", "adjustVolume raw args: $args")
+
+            var percent = -1
+            // Inspect all fields in JSON object for a percentage / level number
+            val keys = args.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val parsed = parseIntegerFromAny(args.get(key))
+                if (parsed in 0..100) {
+                    percent = parsed
+                    break
+                }
+            }
+
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+            val isDecrease = combinedStr.contains("decrease") || combinedStr.contains("down") || combinedStr.contains("lower") || combinedStr.contains("kam") || combinedStr.contains("reduce") || combinedStr.contains("less") || combinedStr.contains("minus")
+            val isIncrease = combinedStr.contains("increase") || combinedStr.contains("up") || combinedStr.contains("raise") || combinedStr.contains("badhao") || combinedStr.contains("more") || combinedStr.contains("high") || combinedStr.contains("plus")
+
+            var finalDisplayPercent = percent
+            var hardFailure: String? = null
+            val maxVolBefore = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            val curVolBefore = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+
+            if (percent in 0..100) {
+                val streams = listOf(AudioManager.STREAM_MUSIC, AudioManager.STREAM_VOICE_CALL)
+                var anyStreamSucceeded = false
+                for (stream in streams) {
+                    try {
+                        val maxVol = audioManager.getStreamMaxVolume(stream)
+                        val targetVol = kotlin.math.round((percent / 100f) * maxVol).toInt().coerceIn(0, maxVol)
+                        audioManager.setStreamVolume(stream, targetVol, AudioManager.FLAG_SHOW_UI)
+                        anyStreamSucceeded = true
+                    } catch (e: SecurityException) {
+                        // Typically thrown when Do Not Disturb / notification policy access blocks the change.
+                        Log.e("JarvisVoiceService", "Blocked setting stream $stream (likely DND policy): ${e.message}")
+                    } catch (e: Exception) {
+                        Log.e("JarvisVoiceService", "Error setting stream $stream: ${e.message}")
+                    }
+                }
+                if (!anyStreamSucceeded) hardFailure = "Do Not Disturb or a system policy is blocking volume changes."
+                finalDisplayPercent = kotlin.math.round((audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maxVolBefore.toFloat()) * 100).toInt()
+            } else if (isDecrease || isIncrease) {
+                val dir = if (isDecrease) AudioManager.ADJUST_LOWER else AudioManager.ADJUST_RAISE
+                var succeeded = false
+                try {
+                    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, dir, AudioManager.FLAG_SHOW_UI)
+                    succeeded = true
+                } catch (e: SecurityException) {
+                    Log.e("JarvisVoiceService", "Blocked adjusting volume (likely DND policy): ${e.message}")
+                }
+                try { audioManager.adjustStreamVolume(AudioManager.STREAM_VOICE_CALL, dir, 0) } catch (_: Exception) {}
+                val curVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                finalDisplayPercent = kotlin.math.round((curVol.toFloat() / maxVolBefore.toFloat()) * 100).toInt()
+                if (!succeeded || curVol == curVolBefore) {
+                    hardFailure = "Do Not Disturb or a system policy is blocking volume changes."
+                }
+            } else {
+                Log.w("JarvisVoiceService", "adjustVolume: no direction or percent found in $args")
+                finalDisplayPercent = kotlin.math.round((curVolBefore.toFloat() / maxVolBefore.toFloat()) * 100).toInt()
+                hardFailure = "I couldn't tell whether you wanted volume up, down, or a specific level."
+            }
+
+            if (hardFailure != null) {
+                speakAloud("I couldn't change the volume, Sir — $hardFailure")
+                return false
+            }
+
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(applicationContext, "🔊 Volume: $finalDisplayPercent%", Toast.LENGTH_SHORT).show()
+            }
+
+            true
+        } catch (e: Exception) {
+            android.util.Log.e("JarvisVoiceService", "adjustVolume failed", e)
+            speakAloud("Something went wrong changing the volume, Sir: ${e.message ?: "unknown error"}.")
+            false
+        }
+    }
+
+    private fun adjustBrightness(args: JSONObject): Boolean {
+        return try {
+            val actionStr = (args.optString("action", "") + " " + args.optString("direction", "") + " " + args.optString("mode", "")).lowercase()
+            
+            var percent = -1
+            val keys = listOf("percentage", "percent", "level", "value", "brightness")
+            for (k in keys) {
+                if (args.has(k)) {
+                    val valObj = args.get(k)
+                    if (valObj is Int) percent = valObj
+                    else if (valObj is Double) percent = valObj.toInt()
+                    else if (valObj is String) {
+                        val cleanDigits = valObj.replace(Regex("[^0-9]"), "")
+                        if (cleanDigits.isNotEmpty()) percent = cleanDigits.toIntOrNull() ?: -1
+                    }
+                }
+                if (percent in 0..100) break
+            }
+
+            val isDecrease = actionStr.contains("decrease") || actionStr.contains("down") || actionStr.contains("lower") || actionStr.contains("kam") || actionStr.contains("reduce") || actionStr.contains("less")
+            val isIncrease = actionStr.contains("increase") || actionStr.contains("up") || actionStr.contains("raise") || actionStr.contains("badhao") || actionStr.contains("more") || actionStr.contains("high")
+
+            val cr = contentResolver
+            val currentBrightness = try {
+                Settings.System.getInt(cr, Settings.System.SCREEN_BRIGHTNESS)
+            } catch (e: Exception) { 128 }
+
+            val targetBrightnessInt = when {
+                percent in 0..100 -> ((percent / 100f) * 255).toInt().coerceIn(15, 255)
+                isDecrease -> (currentBrightness - 50).coerceAtLeast(15)
+                isIncrease -> (currentBrightness + 50).coerceAtMost(255)
+                else -> currentBrightness
+            }
+
+            val targetFloat = (targetBrightnessInt / 255f).coerceIn(0.05f, 1f)
+            val targetPercentDisplay = (targetFloat * 100).toInt()
+
+            // Without WRITE_SETTINGS granted, Android will silently no-op the write below — so
+            // check this FIRST and be honest about it instead of reporting success anyway.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.System.canWrite(this)) {
+                val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS).apply {
+                    data = Uri.parse("package:$packageName")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(intent)
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(applicationContext, "I need \"Modify system settings\" permission to control brightness, Sir — please allow it on the screen I just opened.", Toast.LENGTH_LONG).show()
+                }
+                speakAloud("I need \"Modify system settings\" permission to control brightness, Sir. I've opened the screen to grant it — please turn it on there.")
+                return false
+            }
+
+            var writeFailed = false
+            try {
+                Settings.System.putInt(cr, Settings.System.SCREEN_BRIGHTNESS_MODE, Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL)
+                Settings.System.putInt(cr, Settings.System.SCREEN_BRIGHTNESS, targetBrightnessInt)
+                try {
+                    // Android 11+ (API 30+) float brightness setting — this is what the Quick Settings /
+                    // Control Center slider actually reads, so it must be kept in sync with the int value above.
+                    Settings.System.putFloat(cr, "screen_brightness_float", targetFloat)
+                } catch (_: Exception) {}
+
+                cr.notifyChange(Settings.System.getUriFor(Settings.System.SCREEN_BRIGHTNESS), null)
+                try {
+                    cr.notifyChange(Settings.System.getUriFor("screen_brightness_float"), null)
+                } catch (_: Exception) {}
+            } catch (e: Exception) {
+                android.util.Log.e("JarvisVoiceService", "Settings.System write failed", e)
+                writeFailed = true
+            }
+
+            // Verify the write actually landed instead of assuming it did.
+            val readBack = try { Settings.System.getInt(cr, Settings.System.SCREEN_BRIGHTNESS) } catch (e: Exception) { -1 }
+            if (writeFailed || readBack != targetBrightnessInt) {
+                speakAloud("I tried to set brightness to $targetPercentDisplay% but it didn't stick, Sir. There may be a system restriction on this device.")
+                return false
+            }
+
+            // Sync top window brightness in MainActivity
+            com.jarvis.assistant.ui.main.MainActivity.instance?.setWindowBrightness(targetBrightnessInt)
+
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(applicationContext, "☀️ JARVIS Brightness: $targetPercentDisplay%", Toast.LENGTH_SHORT).show()
+            }
+
+            true
+        } catch (e: Exception) {
+            android.util.Log.e("JarvisVoiceService", "adjustBrightness failed", e)
+            speakAloud("Something went wrong changing brightness, Sir: ${e.message ?: "unknown error"}.")
+            false
+        }
+    }
+
+    /** Send a text message to Gemini Live (used for text chat input). */
+    fun sendTextToGemini(text: String) {
+        currentTurnHasWakeWord = true
+        geminiLive?.sendText(text)
+    }
+
+    fun setMicMuted(muted: Boolean) {
+        isUserMuted = muted
+        audioEngine?.setMuted(muted)
+    }
+
+    fun isMicMuted(): Boolean = isUserMuted
+
+    fun isCurrentlySpeaking(): Boolean = audioEngine?.isCurrentlySpeaking() ?: false
+
+    fun interrupt() {
+        isTurnInterrupted = true
+        standbyAudioBuffer.clear()
+        audioEngine?.clearPlaybackQueue()
+        geminiLive?.sendInterrupt()
+        dispatchToListeners { it.onSpeakingStopped() }
+    }
+
+    fun sendToolResponse(callId: String, name: String, result: JSONObject) {
+        geminiLive?.sendToolResponse(callId, name, result)
+    }
+
+    fun isSessionRunning(): Boolean = isSessionStarted
+
+    /** Periodic health check: if the WebSocket looks dead, force reconnect. */
+    private fun startConnectionHealthCheck() {
+        connectionHealthJob?.cancel()
+        connectionHealthJob = toolScope.launch {
+            while (true) {
+                delay(30_000L)
+                if (isSessionStarted && geminiLive != null && geminiLive?.isConnected() != true) {
+                    Log.w("JarvisVoiceService", "Health check: GeminiLive not connected but session should be running. Forcing reconnect...")
+                    try {
+                        geminiLive?.disconnect(manual = false)
+                    } catch (_: Exception) {}
+                    delay(1000L)
+                    geminiLive?.connect()
+                }
+            }
+        }
+    }
+
+    fun elevateToMediaProjectionForegroundService() {
+        val notification = buildNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            try {
+                var serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                if (cameraVisionEngine?.isCameraStreaming() == true) {
+                    serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                }
+                startForeground(NOTIFICATION_ID, notification, serviceType)
+                Log.d("JarvisVoiceService", "startForeground elevated to MEDIA_PROJECTION (types=$serviceType)")
+            } catch (e: Exception) {
+                Log.e("JarvisVoiceService", "elevateToMediaProjectionForegroundService failed: ${e.message}", e)
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                var serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                if (cameraVisionEngine?.isCameraStreaming() == true) {
+                    serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                }
+                startForeground(NOTIFICATION_ID, notification, serviceType)
+            } catch (e: Exception) {
+                Log.e("JarvisVoiceService", "elevateToMediaProjectionForegroundService failed: ${e.message}", e)
+            }
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    fun startScreenShare(resultCode: Int, data: Intent) {
+        try {
+            if (screenCaptureEngine != null) {
+                screenCaptureEngine?.stop()
+                screenCaptureEngine = null
+            }
+
+            // CRITICAL (Android 14+ / API 34+): Must elevate service to MEDIA_PROJECTION before calling getMediaProjection!
+            elevateToMediaProjectionForegroundService()
+            enterActiveState(fromWakeWord = false)
+
+            val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            val mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data)
+
+            mediaProjection.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() {
+                    stopScreenShare()
+                }
+            }, Handler(Looper.getMainLooper()))
+
+            screenCaptureEngine = com.jarvis.assistant.vision.ScreenCaptureEngine(this, mediaProjection) { jpegBytes ->
+                touchUserActivity()
+                geminiLive?.sendVideoFrame(jpegBytes)
+            }
+            screenCaptureEngine?.start()
+            dispatchToListeners { it.onScreenShareStateChanged(true) }
+
+            // Gemini Live natural voice notification
+            currentTurnHasWakeWord = true
+            geminiLive?.sendText("[SYSTEM EVENT] Live screen sharing has started. You are now receiving continuous mobile screen frames in real time. Please briefly confirm to the user in your natural voice that you can see their screen.", turnComplete = true)
+        } catch (e: Exception) {
+            android.util.Log.e("JarvisVoiceService", "startScreenShare failed", e)
+            stopScreenShare()
+        }
+    }
+
+    fun stopScreenShare() {
+        val wasActive = screenCaptureEngine != null
+        screenCaptureEngine?.stop()
+        screenCaptureEngine = null
+        ensureMicrophoneForegroundService()
+        dispatchToListeners { it.onScreenShareStateChanged(false) }
+        if (wasActive) {
+            geminiLive?.sendText("[SYSTEM COMMAND] Screen vision has been closed by the user. You are no longer receiving screen frames.")
+        }
+    }
+
+    private suspend fun resolvePlayStorePackageName(appName: String): String? = withContext(Dispatchers.IO) {
+        val known = getKnownPackageName(appName)
+        if (known != null) return@withContext known
+
+        return@withContext try {
+            val query = appName.replace("download", "", ignoreCase = true)
+                .replace("install", "", ignoreCase = true).trim()
+            val encoded = Uri.encode(query.ifBlank { appName })
+            val url = URL("https://play.google.com/store/search?q=$encoded&c=apps")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13; Mobile)")
+                connectTimeout = 5000
+                readTimeout = 5000
+            }
+            if (conn.responseCode == 200) {
+                val html = conn.inputStream.bufferedReader().use { reader -> reader.readText() }
+                val match = Regex("""/store/apps/details\?id=([a-zA-Z0-9_.]+)""").find(html)
+                match?.groupValues?.get(1)
+            } else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun getKnownPackageName(appName: String): String? {
+        val clean = appName.lowercase().trim().replace(Regex("[^a-z0-9]"), "")
+        return when {
+            clean.contains("github") -> "com.github.android"
+            clean.contains("blinkit") || clean.contains("grofers") -> "com.grofers.customerapp"
+            clean.contains("zomato") -> "com.application.zomato"
+            clean.contains("swiggy") -> "in.swiggy.android"
+            clean.contains("zepto") -> "com.zepto.customer"
+            clean.contains("whatsapp") -> "com.whatsapp"
+            clean.contains("instagram") -> "com.instagram.android"
+            clean.contains("telegram") -> "org.telegram.messenger"
+            clean.contains("facebook") -> "com.facebook.katana"
+            clean.contains("spotify") -> "com.spotify.music"
+            clean.contains("snapchat") -> "com.snapchat.android"
+            clean.contains("paytm") -> "net.one97.paytm"
+            clean.contains("phonepe") -> "com.phonepe.app"
+            clean.contains("gpay") || clean.contains("googlepay") -> "com.google.android.apps.nfc.payment"
+            clean.contains("flipkart") -> "com.flipkart.android"
+            clean.contains("amazon") -> "com.amazon.mShop.android.shopping"
+            clean.contains("meesho") -> "com.meesho.supply"
+            clean.contains("myntra") -> "com.myntra.android"
+            clean.contains("uber") -> "com.ubercab"
+            clean.contains("ola") -> "com.olacabs.customer"
+            clean.contains("rapido") -> "com.rapido.passenger"
+            clean.contains("linkedin") -> "com.linkedin.android"
+            clean.contains("twitter") || clean == "x" -> "com.twitter.android"
+            clean.contains("youtube") -> "com.google.android.youtube"
+            clean.contains("netflix") -> "com.netflix.mediaclient"
+            clean.contains("chrome") -> "com.android.chrome"
+            clean.contains("discord") -> "com.discord"
+            clean.contains("reddit") -> "com.reddit.frontpage"
+            clean.contains("pinterest") -> "com.pinterest"
+            clean.contains("duolingo") -> "com.duolingo"
+            clean.contains("truecaller") -> "com.truecaller"
+            else -> null
+        }
+    }
+
+    fun isScreenSharing(): Boolean = screenCaptureEngine != null
+
+    fun startCameraVision(useFront: Boolean = false, previewTextureView: android.view.TextureView? = null) {
+        try {
+            stopScreenShare() // Screen share and camera vision are mutually exclusive
+
+            if (cameraVisionEngine == null) {
+                cameraVisionEngine = com.jarvis.assistant.vision.CameraVisionEngine(this) { jpegBytes ->
+                    geminiLive?.sendVideoFrame(jpegBytes)
+                }
+            }
+            cameraVisionEngine?.setPreviewTextureView(previewTextureView)
+            cameraVisionEngine?.startCamera(useFront)
+            ensureMicrophoneForegroundService()
+            dispatchToListeners { it.onCameraVisionStateChanged(true, useFront) }
+
+            // Gemini Live natural voice notification
+            geminiLive?.sendText("[SYSTEM EVENT] Live camera vision has been activated. You are now seeing through the user's camera in real time. Please briefly confirm to the user in your natural voice that you can see.", turnComplete = true)
+        } catch (e: Exception) {
+            android.util.Log.e("JarvisVoiceService", "startCameraVision failed", e)
+            stopCameraVision()
+        }
+    }
+
+    fun updateCameraPreviewTarget(previewTextureView: android.view.TextureView?) {
+        cameraVisionEngine?.setPreviewTextureView(previewTextureView)
+    }
+
+    fun switchCameraLens() {
+        cameraVisionEngine?.let { engine ->
+            if (engine.isCameraStreaming()) {
+                val newLensFront = !engine.isFrontLens()
+                engine.switchCamera()
+                dispatchToListeners { it.onCameraVisionStateChanged(true, newLensFront) }
+            }
+        }
+    }
+
+    fun stopCameraVision() {
+        val wasActive = cameraVisionEngine?.isCameraStreaming() == true
+        cameraVisionEngine?.stopCamera()
+        cameraVisionEngine = null
+        ensureMicrophoneForegroundService()
+        dispatchToListeners { it.onCameraVisionStateChanged(false, false) }
+        if (wasActive) {
+            geminiLive?.sendText("[SYSTEM COMMAND] Camera vision has been closed by the user. You are no longer receiving camera frames. If asked, inform the user that camera vision is currently off.")
+        }
+    }
+
+    fun isCameraVisionActive(): Boolean = cameraVisionEngine?.isCameraStreaming() == true
+    fun isCameraFrontLens(): Boolean = cameraVisionEngine?.isFrontLens() == true
+
+    fun extractUrlsFromText(input: String): List<String> {
+        val urls = mutableListOf<String>()
+        val explicitUrlRegex = Regex("""https?://[^\s,"'<>]+""", RegexOption.IGNORE_CASE)
+        for (m in explicitUrlRegex.findAll(input)) {
+            val u = m.value.trimEnd('.', ',', ';', '!', '?', ')')
+            if (u.isNotEmpty() && !urls.contains(u)) urls.add(u)
+        }
+
+        val domainRegex = Regex("""\b(?:www\.)?([a-zA-Z0-9-]+\.)+(com|in|org|net|io|co|dev|app|ai|gov|edu|me|tech|info|online|xyz|site|store|cc|tv|uk|us|ca|de|fr|jp|cn|biz)(/[^\s,"'<>]*)?\b""", RegexOption.IGNORE_CASE)
+        for (m in domainRegex.findAll(input)) {
+            val clean = m.value.trimEnd('.', ',', ';', '!', '?', ')')
+            val full = if (clean.startsWith("http://", ignoreCase = true) || clean.startsWith("https://", ignoreCase = true)) clean else "https://$clean"
+            if (!urls.any { it.equals(full, ignoreCase = true) || it.contains(clean, ignoreCase = true) }) {
+                urls.add(full)
+            }
+        }
+        return urls
+    }
+
+    suspend fun openUrlsInChromeTabs(urls: List<String>): Boolean {
+        if (urls.isEmpty()) return false
+        var anyLaunched = false
+        val baseTime = System.currentTimeMillis()
+
+        for ((index, rawUrl) in urls.withIndex()) {
+            val urlString = if (rawUrl.startsWith("http://", ignoreCase = true) || rawUrl.startsWith("https://", ignoreCase = true)) {
+                rawUrl
+            } else {
+                "https://$rawUrl"
+            }
+            val uri = Uri.parse(urlString)
+            val tabAppId = "${packageName}_tab_${baseTime}_$index"
+
+            val chromeIntent = Intent(Intent.ACTION_VIEW, uri).apply {
+                setPackage("com.android.chrome")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                putExtra(android.provider.Browser.EXTRA_APPLICATION_ID, tabAppId)
+                putExtra("create_new_tab", true)
+                putExtra("com.android.browser.application_id", tabAppId)
+            }
+
+            val launched = com.jarvis.assistant.util.ActivityLauncherHelper.startActivitySafely(this@JarvisVoiceService, chromeIntent)
+            if (launched) {
+                anyLaunched = true
+            } else {
+                val fallbackIntent = Intent(Intent.ACTION_VIEW, uri).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    putExtra(android.provider.Browser.EXTRA_APPLICATION_ID, tabAppId)
+                    putExtra("create_new_tab", true)
+                }
+                if (com.jarvis.assistant.util.ActivityLauncherHelper.startActivitySafely(this@JarvisVoiceService, fallbackIntent)) {
+                    anyLaunched = true
+                }
+            }
+
+            // Delay 400ms between multiple tabs so Chrome creates separate tab tasks
+            if (urls.size > 1 && index < urls.size - 1) {
+                delay(400L)
+            }
+        }
+        return anyLaunched
+    }
+
+    private fun parseTargetUrl(query: String): String? {
+        var clean = query.trim()
+        val lower = clean.lowercase()
+
+        // Strip common voice command prefixes
+        val prefixes = listOf("open website", "open site", "visit website", "visit site", "open url", "navigate to", "visit", "open")
+        for (prefix in prefixes) {
+            if (lower.startsWith(prefix)) {
+                val candidate = clean.substring(prefix.length).trim()
+                if (candidate.isNotEmpty()) {
+                    clean = candidate
+                    break
+                }
+            }
+        }
+
+        if (clean.startsWith("http://", ignoreCase = true) || clean.startsWith("https://", ignoreCase = true)) {
+            return clean
+        }
+
+        val cleanLower = clean.lowercase()
+        // Domain pattern check with common TLDs
+        val domainRegex = Regex("""^([a-zA-Z0-9-]+\.)+(com|in|org|net|io|co|dev|app|ai|gov|edu|me|tech|info|online|xyz|site|store|cc|tv|uk|us|ca|de|fr|jp|cn|biz)(/.*)?$""")
+        if (domainRegex.matches(cleanLower)) {
+            return "https://$clean"
+        }
+
+        // General URL host pattern (e.g. www.something or host.ext)
+        if (cleanLower.startsWith("www.") || (cleanLower.contains(".") && !cleanLower.contains(" ") && cleanLower.indexOf(".") < cleanLower.length - 2)) {
+            return "https://$clean"
+        }
+
+        return null
+    }
+
+    /** Fully tears down the voice session and stops the service (e.g. user quit JARVIS entirely). */
+    fun stopSession() {
+        resetTurnState()
+        stopScreenShare()
+        stopCameraVision()
+        releaseWakeLock()
+        autoSleepJob?.cancel()
+        idleCountdownJob?.cancel()
+        activeFollowUpJob?.cancel()
+        connectionHealthJob?.cancel()
+        geminiLive?.disconnect()
+        audioEngine?.release()
+        toolScope.coroutineContext.cancelChildren()
+        geminiLive = null
+        audioEngine = null
+        isSessionStarted = false
+        conversationState = ConversationState.SLEEPING
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        releaseWakeLock()
+        try {
+            textToSpeech?.stop()
+            textToSpeech?.shutdown()
+            textToSpeech = null
+        } catch (_: Exception) {}
+        unregisterPhoneCallReceiver()
+        stopCameraVision()
+        stopSession()
+    }
+
+    private var phoneCallReceiverRegistered = false
+    private val phoneCallReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == android.telephony.TelephonyManager.ACTION_PHONE_STATE_CHANGED) {
+                val stateStr = intent.getStringExtra(android.telephony.TelephonyManager.EXTRA_STATE)
+                Log.d("JarvisVoiceService", "Phone call state changed: $stateStr")
+                if (stateStr == android.telephony.TelephonyManager.EXTRA_STATE_IDLE) {
+                    Log.d("JarvisVoiceService", "Phone call finished — unmuting mic.")
+                    setMicMuted(false)
+                    unregisterPhoneCallReceiver()
+                }
+            }
+        }
+    }
+
+    fun monitorPhoneCallAndKeepQuiet() {
+        setMicMuted(true)
+        audioEngine?.clearPlaybackQueue()
+        if (!phoneCallReceiverRegistered) {
+            val filter = android.content.IntentFilter(android.telephony.TelephonyManager.ACTION_PHONE_STATE_CHANGED)
+            registerReceiver(phoneCallReceiver, filter)
+            phoneCallReceiverRegistered = true
+        }
+    }
+
+    private fun unregisterPhoneCallReceiver() {
+        if (phoneCallReceiverRegistered) {
+            try { unregisterReceiver(phoneCallReceiver) } catch (_: Exception) {}
+            phoneCallReceiverRegistered = false
+        }
+    }
+
+    private fun createNotificationChannel() {
+        val channel = NotificationChannel(
+            CHANNEL_ID, "JARVIS Voice", NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "Keeps JARVIS listening while other apps are open"
+            setShowBadge(false)
+        }
+        getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+    }
+
+    private fun buildNotification(): Notification {
+        val contentIntent = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_IMMUTABLE
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("JARVIS is listening")
+            .setContentText("Tap to return to JARVIS")
+            .setSmallIcon(R.drawable.ic_jarvis_notif)
+            .setContentIntent(contentIntent)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+    }
+}
+
