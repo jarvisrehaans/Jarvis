@@ -1,8 +1,8 @@
 {
-  "versionCode": 122,
-  "versionName": "1.6.6",
+  "versionCode": 123,
+  "versionName": "1.6.7",
   "apkName": "Jarvis-AI-Release.apk",
   "downloadUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
   "apkUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
-  "changelog": "⚡ What's New & Fixed in v1.6.6:\n\n• 🎙️ Smart Wake Detection: Robust multi-word phrase filtering ('Hey Jarvis', 'Hello Jarvis', 'Hi Jarvis') preventing accidental triggers from singing, background audio, or casual speech.\n\n• 🔄 Clean Standby Recovery: Cleared session cache upon standby entry to eliminate stale turn replays.\n\n• ⚡ Zero-Delay Mic Capture: Instant hardware microphone acquisition with pre-connection buffering so no spoken words are lost during connection.\n\n• 🎨 Seamless Theme Switching: Dynamic UI color and theme updates without restarting the activity or interrupting active AI conversations.\n\n• 🗣️ Instant Voice Reconfiguration: Voice model and persona updates apply dynamically without needing a service restart."
+  "changelog": "⚡ What's New & Fixed in v1.6.7:\n\n• 🚀 Official Release v1.6.7: Seamless in-app OTA updates directly connected to jarvisrehaans/Jarvis.\n\n• 🎙️ Smart Wake Detection: Robust multi-word phrase filtering ('Hey Jarvis', 'Hello Jarvis', 'Hi Jarvis') preventing accidental triggers from singing or background speech.\n\n• ⚡ Zero-Delay Audio Capture: Instant microphone streaming with pre-connection buffering so no speech is lost.\n\n• 🎨 Seamless Theme Switching: Dynamic UI color updates without restarting activity or interrupting live conversations.\n\n• 🗣️ Instant Voice Reconfiguration: Voice model updates apply immediately without needing to restart the service."
 }
