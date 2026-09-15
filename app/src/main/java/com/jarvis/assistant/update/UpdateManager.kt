@@ -177,7 +177,7 @@ object UpdateManager {
 
             val json = JSONObject(body)
             val urlFromKey = json.optString("downloadUrl", "").ifBlank { json.optString("apkUrl", "") }
-            val baseApkUrl = if (urlFromKey.isNotBlank()) urlFromKey else "https://raw.githubusercontent.com/rehaanoffical77-gif/Jarvis-Ai/main/Jarvis-AI-Release.apk"
+            val baseApkUrl = if (urlFromKey.isNotBlank()) urlFromKey else "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk"
             val finalApkUrl = if (baseApkUrl.contains("?")) "$baseApkUrl&cb=${System.currentTimeMillis()}" else "$baseApkUrl?cb=${System.currentTimeMillis()}"
 
             UpdateInfo(
