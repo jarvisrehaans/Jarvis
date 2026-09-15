@@ -28,11 +28,11 @@ class WakeWordDetector(private val context: Context) {
         private const val TAG = "WakeWordDetector"
         private const val WAKE_LANGUAGE = "en-IN"
         private val WAKE_PHRASES = listOf(
-            "hey jarvis", "jarvis", "hello jarvis", "hi jarvis",
+            "hey jarvis", "hello jarvis", "hi jarvis",
             "ok jarvis", "okay jarvis", "listen jarvis", "wake up jarvis",
             "sunno jarvis", "jarvis suno", "jarvis jaago",
-            "javis", "hey javis", "hi javis", "hello javis",
-            "jarvish", "jaarvis", "jarviss", "service", "travis"
+            "hey javis", "hi javis", "hello javis",
+            "जार्विस सुनो", "जागो जार्विस"
         )
         private const val RESTART_DELAY_BASE_MS = 250L
         private const val RESTART_DELAY_MAX_MS = 2000L
@@ -132,7 +132,8 @@ class WakeWordDetector(private val context: Context) {
                 override fun onPartialResults(partialResults: Bundle?) {
                     lastCallbackTimeMs = System.currentTimeMillis()
                     lastResultTimeMs = lastCallbackTimeMs
-                    containsWakeWord(partialResults)
+                    // Do NOT trigger on partial results in background standby.
+                    // SpeechRecognizer partial results are interim guesses that cause false wakeups on ambient speech.
                 }
 
                 override fun onError(error: Int) {
@@ -205,10 +206,8 @@ class WakeWordDetector(private val context: Context) {
             val normalized = normalizeText(candidate)
             if (normalized.isEmpty() && candidate.isEmpty()) continue
 
-            val words = normalized.split(" ")
             val hasWake = WAKE_PHRASES.any { normalized.contains(it) } ||
-                    words.any { w -> w == "jarvis" || w == "javis" || w == "jarvish" || w == "jaarvis" || w == "jarviss" || w == "travis" || w == "service" } ||
-                    candidate.contains("जार्विस") || candidate.contains("जारविस")
+                    candidate.contains("जार्विस सुनो") || candidate.contains("जागो जार्विस")
 
             if (hasWake) {
                 Log.d(TAG, "Wake word triggered from: \"$candidate\" (normalized: \"$normalized\")")

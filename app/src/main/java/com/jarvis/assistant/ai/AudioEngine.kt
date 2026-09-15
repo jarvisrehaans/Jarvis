@@ -7,6 +7,7 @@ import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 import kotlinx.coroutines.*
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.TimeUnit
 import kotlin.math.sqrt
 
 /**
@@ -22,14 +23,15 @@ class AudioEngine(private val context: Context) {
         const val SPEAKER_SAMPLE_RATE = 24000
         const val CHUNK_SIZE = 640
 
-        // Low latency audio buffer: ~80ms of audio before starting playback.
-        private const val PREBUFFER_BYTES = 3840
+        // Zero-delay audio streaming: starts playback the instant the first packet arrives.
+        private const val PREBUFFER_BYTES = 0
 
-        // Debounce before marking speaking as stopped: 400ms bridges network chunk jitter without clipping syllables
-        private const val SPEAK_STOP_DEBOUNCE_MS = 400L
+        // Keep the turn hand-off tight. 100ms still absorbs a missed network packet without
+        // making a follow-up command wait for the old response state to clear.
+        private const val SPEAK_STOP_DEBOUNCE_MS = 100L
 
-        // Echo Cooldown window: Keep mic muted for 250ms post-speech so speaker reverb in room is never sent to Gemini
-        private const val ECHO_COOLDOWN_MS = 250L
+        // Hardware AEC is enabled below, so this only needs to cover the speaker tail.
+        private const val ECHO_COOLDOWN_MS = 80L
 
         // Grace period at the beginning of speech: Suppress barge-in for 1000ms so initial word onset never self-interrupts
         private const val INITIAL_BARGE_IN_GRACE_MS = 1000L
@@ -43,7 +45,9 @@ class AudioEngine(private val context: Context) {
         private const val BARGE_IN_CHUNKS_HEADSET = 4
         private const val BARGE_IN_RMS_SPEAKER = 0.45f
         private const val BARGE_IN_CHUNKS_SPEAKER = 16
-        private const val MAX_QUEUE_CHUNKS = 300
+        // Never let a network burst turn into seconds of delayed speech.  At 20ms input
+        // packets this caps queued playback at roughly half a second.
+        private const val MAX_QUEUE_CHUNKS = 25
     }
 
     var onAudioChunkCaptured: ((ByteArray) -> Unit)? = null
@@ -78,6 +82,8 @@ class AudioEngine(private val context: Context) {
 
     /** True while JARVIS's audio is playing — used to suppress mic echo. */
     fun isCurrentlySpeaking() = isSpeaking || isExternalSpeaking
+
+    fun isRecording(): Boolean = isRecording
 
     fun hasQueuedAudio(): Boolean = !playbackQueue.isEmpty()
 
@@ -158,24 +164,31 @@ class AudioEngine(private val context: Context) {
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT
         )
-        val bufferSize = maxOf(minBufSize, CHUNK_SIZE * 4)
+        // Two 20ms packets keep capture latency low while leaving enough room for the
+        // recorder's hardware callback. This matches the low-latency reference pipeline.
+        val bufferSize = maxOf(minBufSize, CHUNK_SIZE * 2)
 
-        // Try standard hardware MIC first (avoids OEM voice-recognition DSP muting in background),
-        // fallback to VOICE_RECOGNITION if needed.
+        // VOICE_COMMUNICATION opts into Android's real-time voice path (AEC/NS and lower
+        // capture buffering). Fall back for devices whose vendor implementation is unreliable.
         val sources = intArrayOf(
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
             MediaRecorder.AudioSource.MIC,
             MediaRecorder.AudioSource.VOICE_RECOGNITION
         )
         var record: AudioRecord? = null
         for (src in sources) {
             try {
-                val candidate = AudioRecord(
-                    src,
-                    MIC_SAMPLE_RATE,
-                    AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                    bufferSize
-                )
+                val candidate = AudioRecord.Builder()
+                    .setAudioSource(src)
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setSampleRate(MIC_SAMPLE_RATE)
+                            .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(bufferSize)
+                    .build()
                 if (candidate.state == AudioRecord.STATE_INITIALIZED) {
                     record = candidate
                     Log.d(TAG, "AudioRecord initialized successfully with audio source $src")
@@ -399,7 +412,7 @@ class AudioEngine(private val context: Context) {
             )
 
             val attributes = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setUsage(AudioAttributes.USAGE_ASSISTANT)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
 
@@ -409,14 +422,15 @@ class AudioEngine(private val context: Context) {
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .build()
 
-            // 16KB+ buffer provides ample headroom against CPU jitter and underruns
-            val trackBufferBytes = maxOf(minBufSize * 4, 16384)
+            // Tight buffer for minimal first-byte-to-speaker latency (matches reference app)
+            val trackBufferBytes = maxOf(minBufSize, 4096)
 
             AudioTrack.Builder()
                 .setAudioAttributes(attributes)
                 .setAudioFormat(format)
                 .setBufferSizeInBytes(trackBufferBytes)
                 .setTransferMode(AudioTrack.MODE_STREAM)
+                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                 .build().apply { play() }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to create AudioTrack: ${e.message}", e)
@@ -485,14 +499,8 @@ class AudioEngine(private val context: Context) {
                             try { withContext(Dispatchers.Main) { onSpeakingStarted?.invoke() } } catch (_: Exception) {}
                         }
 
-                        // Pre-buffer: accumulate ~80ms of audio before the first AudioTrack
-                        // write to prevent underrun clicks/pops at turn start.
+                        // Zero-delay streaming: start writing immediately upon first chunk arrival
                         if (!prebufferDone) {
-                            prebufferByteCount += chunk.size
-                            if (prebufferByteCount < PREBUFFER_BYTES && playbackQueue.isNotEmpty()) {
-                                // Keep accumulating — don't write to AudioTrack yet
-                                continue
-                            }
                             prebufferDone = true
                         }
 
@@ -540,7 +548,7 @@ class AudioEngine(private val context: Context) {
                                 try { withContext(Dispatchers.Main) { onSpeakingStopped?.invoke() } } catch (_: Exception) {}
                             }
                         }
-                        delay(5)
+                        // poll() already yielded for up to 20ms; no additional busy wait.
                     }
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e

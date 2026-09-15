@@ -34,10 +34,25 @@ object AppLauncher {
         object Failure : OpenAppResult()
     }
 
+    private var cachedApps: List<InstalledApp>? = null
+    private var lastCacheTimeMs: Long = 0L
+    private const val CACHE_TTL_MS: Long = 30_000L
+
+    fun clearCache() {
+        cachedApps = null
+        lastCacheTimeMs = 0L
+    }
+
     /**
      * Returns every user-launchable app across all user profiles (main user + dual app profiles).
      */
     fun getLaunchableApps(context: Context): List<InstalledApp> {
+        val now = System.currentTimeMillis()
+        val cached = cachedApps
+        if (cached != null && (now - lastCacheTimeMs) < CACHE_TTL_MS) {
+            return cached
+        }
+
         val apps = mutableListOf<InstalledApp>()
         val pm = context.packageManager
 
@@ -101,9 +116,12 @@ object AppLauncher {
         }
 
         // De-duplicate by combination of package name and user profile
-        return apps
+        val result = apps
             .distinctBy { Pair(it.packageName, it.userHandle) }
             .sortedWith(compareBy({ it.label.lowercase() }, { it.isDualOrWorkProfile }))
+        cachedApps = result
+        lastCacheTimeMs = now
+        return result
     }
 
     /**

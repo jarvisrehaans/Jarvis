@@ -91,7 +91,14 @@
     };
 
     let activeThemeKey = 'blue';
-    let currentPalette = PALETTES.blue;
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlTheme = urlParams.get('theme');
+      if (urlTheme && PALETTES[urlTheme]) {
+        activeThemeKey = urlTheme;
+      }
+    } catch(e) {}
+    let currentPalette = PALETTES[activeThemeKey] || PALETTES.blue;
     let C_BRIGHT = currentPalette.bright;
     let C_MID = currentPalette.mid;
     let C_DIM = currentPalette.dim;
@@ -692,6 +699,12 @@
         }
       }
     });
+
+    window.setAppTheme = function(themeName) {
+      if (!PALETTES[themeName]) return;
+      if (themeName === activeThemeKey) return;
+      window.location.search = '?theme=' + themeName;
+    };
 
     window.addEventListener("resize", function() {
       const w = window.innerWidth || 300;

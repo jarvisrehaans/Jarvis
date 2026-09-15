@@ -81,12 +81,12 @@ class SettingsActivity : AppCompatActivity() {
     )
 
     private val voiceLabels = listOf(
-        "Kore", "Puck", "Charon", "Fenrir", "Zephyr", "Aoede", "Leda", "Orus"
+        "Puck", "Kore", "Charon", "Fenrir", "Zephyr", "Aoede", "Leda", "Orus"
     )
     private val voiceValues = voiceLabels
 
     private val personalityDescriptions = listOf(
-        "Lumina AI — Warm best friend tone, natural human flow with conversational pauses. 💖",
+        "JARVIS AI — Warm best friend tone, natural human flow with conversational speed. ⚡",
         "Warm, caring Hinglish companion with expressive replies. 💖",
         "Formal, precise English only. No emojis, straight to the point. 💼",
         "Friendly Hinglish/English mix — balanced and helpful. 🤖"
@@ -283,20 +283,20 @@ class SettingsActivity : AppCompatActivity() {
         val p = prefs()
         userNameInput.setText(p.getString("user_name", ""))
 
-        val savedVoice = p.getString("gemini_voice", "Kore")
+        val savedVoice = p.getString("gemini_voice", "Puck")
         selectedVoiceIndex = voiceValues.indexOf(savedVoice).coerceAtLeast(0)
 
         val savedModel = p.getString("gemini_model", geminiModelValues[0]) ?: geminiModelValues[0]
         selectedModelIndex = geminiModelValues.indexOf(savedModel).coerceAtLeast(0)
 
-        val personalityIndex = when (p.getString("personality_mode", "lumina")) {
+        val personalityIndex = when (p.getString("personality_mode", "jarvis")) {
             "gf" -> 1
             "professional" -> 2
             "assistant" -> 3
             else -> 0
         }
         selectedPersonalityIndex = personalityIndex
-        personalitySegmented.setOptions(listOf("Lumina 💖", "GF 💖", "Pro 💼", "Assist 🤖"), personalityIndex)
+        personalitySegmented.setOptions(listOf("JARVIS ⚡", "GF 💖", "Pro 💼", "Assist 🤖"), personalityIndex)
         personalityDescriptionText.text = personalityDescriptions[personalityIndex]
 
         val savedHomeStyle = p.getString("home_screen_style", "classic")
@@ -460,7 +460,7 @@ class SettingsActivity : AppCompatActivity() {
             1 -> "gf"
             2 -> "professional"
             3 -> "assistant"
-            else -> "lumina"
+            else -> "jarvis"
         }
 
         val newUserName = userNameInput.text.toString().trim()
@@ -468,17 +468,23 @@ class SettingsActivity : AppCompatActivity() {
         val homeStyleValue = if (selectedHomeStyleIndex == 1) "cyber_hud" else "classic"
         val previousTheme = ThemeManager.getTheme(this)
 
+        val selectedVoice = voiceValues.getOrNull(selectedVoiceIndex) ?: "Puck"
         prefs().edit().apply {
             putString("api_key", apiKeyInput.text.toString().trim())
             putString("user_name", newUserName)
             putString("tts_engine", "gemini")
             putString("gemini_model", geminiModelValues.getOrNull(selectedModelIndex) ?: defaultGeminiModel)
-            putString("gemini_voice", voiceValues.getOrNull(selectedVoiceIndex) ?: "Kore")
+            putString("gemini_voice", selectedVoice)
+            putString("cached_voice", selectedVoice)
             putString("personality_mode", selectedPersonality)
             putString("home_screen_style", homeStyleValue)
             putString(ThemeManager.PREF_KEY_THEME, newTheme)
             apply()
         }
+
+        try {
+            com.jarvis.assistant.service.JarvisVoiceService.instance?.updateVoice(selectedVoice)
+        } catch (_: Exception) {}
 
         syncUserDataToFirebase(newUserName)
         EnvLoader.resetCache()

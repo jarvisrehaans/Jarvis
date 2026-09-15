@@ -4,6 +4,19 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Standby Bar</title>
+<script>
+  (function() {
+    try {
+      var p = new URLSearchParams(window.location.search);
+      if (p.get('theme') === 'gold') {
+        document.documentElement.classList.add('theme-gold');
+        document.addEventListener('DOMContentLoaded', function() {
+          if (document.body) document.body.classList.add('theme-gold');
+        });
+      }
+    } catch(e) {}
+  })();
+</script>
 <style>
   :root{
     --glow: #3B82F6;
@@ -14,7 +27,7 @@
     --shadow-accent: rgba(59, 130, 246, 0.25);
   }
 
-  body.theme-gold {
+  body.theme-gold, html.theme-gold {
     --glow: #F59E0B;
     --glow-dim: #78350F;
     --border-accent: rgba(217, 119, 6, 0.35);
@@ -454,9 +467,11 @@
 
   window.setAppTheme = function(themeName) {
     if (themeName === 'gold') {
-      document.body.classList.add('theme-gold');
+      document.documentElement.classList.add('theme-gold');
+      if (document.body) document.body.classList.add('theme-gold');
     } else {
-      document.body.classList.remove('theme-gold');
+      document.documentElement.classList.remove('theme-gold');
+      if (document.body) document.body.classList.remove('theme-gold');
     }
   };
 

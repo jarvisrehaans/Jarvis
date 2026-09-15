@@ -1,8 +1,8 @@
 {
-  "versionCode": 121,
-  "versionName": "1.6.5",
+  "versionCode": 122,
+  "versionName": "1.6.6",
   "apkName": "Jarvis-AI-Release.apk",
-  "downloadUrl": "https://raw.githubusercontent.com/rehaanoffical77-gif/Jarvis-Ai/main/Jarvis-AI-Release.apk",
-  "apkUrl": "https://raw.githubusercontent.com/rehaanoffical77-gif/Jarvis-Ai/main/Jarvis-AI-Release.apk",
-  "changelog": "⚡ What's New & Fixed in v1.6.5:\n\n• 🌐 WebSocket Stability & Proactive GoAway Auto-Reconnect: Fixed spurious 'Software caused connection abort' popups during routine session renewals and Google GoAway handshakes; old superseded socket callbacks are now safely ignored.\n\n• 📱 Live Screen Sharing Vision: Gemini Live multimodal video streaming with real-time video schema and Android 14 MediaProjection foreground service compliance.\n\n• 🔇 Zero Mic Blinking: Hardware microphone capture remains continuous and rock-solid during background standby."
+  "downloadUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
+  "apkUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
+  "changelog": "⚡ What's New & Fixed in v1.6.6:\n\n• 🎙️ Smart Wake Detection: Robust multi-word phrase filtering ('Hey Jarvis', 'Hello Jarvis', 'Hi Jarvis') preventing accidental triggers from singing, background audio, or casual speech.\n\n• 🔄 Clean Standby Recovery: Cleared session cache upon standby entry to eliminate stale turn replays.\n\n• ⚡ Zero-Delay Mic Capture: Instant hardware microphone acquisition with pre-connection buffering so no spoken words are lost during connection.\n\n• 🎨 Seamless Theme Switching: Dynamic UI color and theme updates without restarting the activity or interrupting active AI conversations.\n\n• 🗣️ Instant Voice Reconfiguration: Voice model and persona updates apply dynamically without needing a service restart."
 }

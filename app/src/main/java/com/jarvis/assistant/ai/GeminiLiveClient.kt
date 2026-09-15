@@ -56,6 +56,8 @@ class GeminiLiveClient(
     private var isSetupComplete = false
     private var reconnectAttempt = 0
     @Volatile private var lastAudioSentTimeMs = 0L
+    /** Keeps the WebSocket warm during local wake-word standby without sending PCM. */
+    @Volatile private var isAudioTransportPaused = false
     @Volatile private var lastInteractionTimeMs = System.currentTimeMillis()
     @Volatile private var lastServerMessageTimeMs = System.currentTimeMillis()
 
@@ -72,6 +74,7 @@ class GeminiLiveClient(
 
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .protocols(listOf(Protocol.HTTP_1_1))
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS) // streaming connection, no timeout
             .writeTimeout(0, TimeUnit.MILLISECONDS)
@@ -985,7 +988,7 @@ class GeminiLiveClient(
 
     /** Send a chunk of 16kHz mono PCM16 mic audio. */
     fun sendAudioChunk(pcmBytes: ByteArray) {
-        if (!isSetupComplete) return
+        if (!isSetupComplete || isAudioTransportPaused) return
         lastAudioSentTimeMs = System.currentTimeMillis()
         try {
             val b64 = Base64.encodeToString(pcmBytes, Base64.NO_WRAP)
@@ -1223,9 +1226,17 @@ class GeminiLiveClient(
     private fun triggerDebouncedTurnComplete() {
         turnCompleteJob?.cancel()
         turnCompleteJob = scope.launch {
-            delay(250L) // 250ms debounce before finalizing transcript
+            // Gemini sends turnComplete after final content. A brief grace period protects
+            // against packet ordering without delaying the next interaction by 250ms.
+            delay(75L)
             onTurnComplete?.invoke()
         }
+    }
+
+    /** Suspend microphone traffic without tearing down the established Live session. */
+    fun setAudioTransportPaused(paused: Boolean) {
+        isAudioTransportPaused = paused
+        if (paused) lastAudioSentTimeMs = System.currentTimeMillis()
     }
 
     private fun startKeepAlive() {
@@ -1234,7 +1245,8 @@ class GeminiLiveClient(
             val silentPcm = ByteArray(3200) // 100ms of 16kHz mono PCM silence
             while (isActive) {
                 delay(KEEPALIVE_INTERVAL_MS)
-                if (isSetupComplete && (System.currentTimeMillis() - lastAudioSentTimeMs) >= KEEPALIVE_INTERVAL_MS) {
+                if (!isAudioTransportPaused && isSetupComplete &&
+                    (System.currentTimeMillis() - lastAudioSentTimeMs) >= KEEPALIVE_INTERVAL_MS) {
                     sendAudioChunk(silentPcm)
                 }
             }

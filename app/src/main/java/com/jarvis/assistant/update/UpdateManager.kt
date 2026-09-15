@@ -46,7 +46,7 @@ object UpdateManager {
     private const val TAG = "UpdateManager"
 
     // Default remote version metadata URL
-    private const val DEFAULT_VERSION_URL = "https://raw.githubusercontent.com/rehaanoffical77-gif/Jarvis-Ai/main/version.json"
+    private const val DEFAULT_VERSION_URL = "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/version.json"
 
     @Keep
     data class UpdateInfo(
