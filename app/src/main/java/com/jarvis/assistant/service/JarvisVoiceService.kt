@@ -536,6 +536,28 @@ class JarvisVoiceService : Service() {
         backgroundAutoStandbyJob = null
     }
 
+    private var lastAppOpenGreetingTimeMs = 0L
+    private val GREETING_COOLDOWN_MS = 45_000L
+    @Volatile private var pendingAppOpenGreeting = false
+
+    fun triggerAppOpenGreeting() {
+        if (!isAppInForeground || isInBackgroundStandby()) return
+        lastAppOpenGreetingTimeMs = System.currentTimeMillis()
+        pendingAppOpenGreeting = false
+
+        toolScope.launch {
+            delay(500L) // Allow UI and audio pipeline to settle
+            if (!isAppInForeground || isInBackgroundStandby()) return@launch
+
+            val prefs = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
+            val userName = prefs.getString("user_name", "Sir")?.ifBlank { "Sir" } ?: "Sir"
+
+            val greetingPrompt = "Please greet the user out loud right now. Say: 'Hello $userName, welcome!' and ask how you can help. Keep it to one short sentence. Do not call any tools."
+            Log.i("JarvisVoiceService", "Triggering app-open greeting for $userName: $greetingPrompt")
+            geminiLive?.sendText(greetingPrompt)
+        }
+    }
+
     fun setAppForeground(isForeground: Boolean) {
         val wasForeground = isAppInForeground
         if (wasForeground == isForeground) return
@@ -546,6 +568,15 @@ class JarvisVoiceService : Service() {
             touchUserActivity()
             if (_isStandby.value) {
                 enterActiveState(fromWakeWord = false)
+            }
+            // Trigger spoken greeting if cooldown elapsed
+            val now = System.currentTimeMillis()
+            if (now - lastAppOpenGreetingTimeMs > GREETING_COOLDOWN_MS) {
+                if (geminiLive?.isConnected() == true) {
+                    triggerAppOpenGreeting()
+                } else {
+                    pendingAppOpenGreeting = true
+                }
             }
         } else {
             updateNotificationState(ServiceNotificationState.STANDBY)
@@ -936,6 +967,11 @@ class JarvisVoiceService : Service() {
         if (isSessionStarted && geminiLive != null) return
         isSessionStarted = true
 
+        val now = System.currentTimeMillis()
+        if (isAppInForeground && (now - lastAppOpenGreetingTimeMs > GREETING_COOLDOWN_MS)) {
+            pendingAppOpenGreeting = true
+        }
+
         acquireWakeLock()
         ensureMicrophoneForegroundService()
 
@@ -996,6 +1032,10 @@ class JarvisVoiceService : Service() {
                             geminiLive?.sendAudioChunk(chunk)
                         }
                         updateNotificationState(ServiceNotificationState.IDLE)
+                        if (pendingAppOpenGreeting && isAppInForeground) {
+                            pendingAppOpenGreeting = false
+                            triggerAppOpenGreeting()
+                        }
                     } else {
                         audioEngine?.startRecording() // KEEP RECORDING ACTIVE FOR VOSK
                         audioEngine?.stopPlayback()
