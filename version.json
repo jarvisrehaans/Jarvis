@@ -1,8 +1,8 @@
 {
-  "versionCode": 123,
-  "versionName": "1.6.7",
+  "versionCode": 124,
+  "versionName": "1.6.8",
   "apkName": "Jarvis-AI-Release.apk",
   "downloadUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
   "apkUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
-  "changelog": "⚡ What's New & Fixed in v1.6.7:\n\n• 🚀 Official Release v1.6.7: Seamless in-app OTA updates directly connected to jarvisrehaans/Jarvis.\n\n• 🎙️ Smart Wake Detection: Robust multi-word phrase filtering ('Hey Jarvis', 'Hello Jarvis', 'Hi Jarvis') preventing accidental triggers from singing or background speech.\n\n• ⚡ Zero-Delay Audio Capture: Instant microphone streaming with pre-connection buffering so no speech is lost.\n\n• 🎨 Seamless Theme Switching: Dynamic UI color updates without restarting activity or interrupting live conversations.\n\n• 🗣️ Instant Voice Reconfiguration: Voice model updates apply immediately without needing to restart the service."
+  "changelog": "⚡ What's New & Fixed in v1.6.8:\n\n• 🔇 Rock-Solid Steady Mic: Completely eliminated microphone toggling/blinking (ON/OFF cycling) in background standby mode. Direct in-memory continuous Vosk Kaldi AI keeps the hardware microphone smoothly active without privacy light flickering.\n\n• 🎯 Precision Wake Word Filtering: Fixed false wakeups on ambient greetings like 'hello'. Jarvis now strictly triggers on full wake phrases ('Hey Jarvis', 'Hello Jarvis', 'Jarvis') and ignores general conversation.\n\n• 🌙 Smart Background Auto-Standby: When minimized or running in the background, Jarvis automatically returns to silent offline standby 7 seconds after replying, stopping all cloud streaming and preventing unwanted replies to room speech.\n\n• 🛡️ ProGuard R8 Native Protection: Added keep rules for Vosk and JNA native shared libraries for rock-solid release build stability.\n\n• ⚡ Instant Voice Response: Optimized pre-connection audio buffering for zero dropped syllables upon wake."
 }

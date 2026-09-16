@@ -46,3 +46,15 @@
 -dontwarn com.google.firebase.**
 -keep class com.google.android.gms.** { *; }
 -dontwarn com.google.android.gms.**
+
+# Vosk Offline Speech Recognition
+-keep class org.vosk.** { *; }
+-keepclassmembers class org.vosk.** { *; }
+
+# JNA (Java Native Access)
+-dontwarn java.awt.**
+-keep class com.sun.jna.** { *; }
+-keepclassmembers class com.sun.jna.** { *; }
+-keepclassmembers class * extends com.sun.jna.Library { *; }
+-keepclassmembers class * extends com.sun.jna.Structure { *; }
+
