@@ -23,12 +23,13 @@ class AudioEngine(private val context: Context) {
         const val SPEAKER_SAMPLE_RATE = 24000
         const val CHUNK_SIZE = 1280 // 1280 bytes = 640 samples = 40ms of 16kHz mono audio
 
-        // Zero-delay audio streaming: starts playback the instant the first packet arrives.
-        private const val PREBUFFER_BYTES = 0
+        // Jitter cushion pre-buffering: 4800 bytes = ~100ms of 24kHz 16-bit mono audio.
+        // Buffers an initial 100ms cushion so network bursts/jitter never cause AudioTrack underruns.
+        private const val PREBUFFER_BYTES = 4800
 
-        // Debounce before declaring speech finished: 220ms lets AudioTrack finish
-        // its trailing packet while unblocking the mic fast enough for instant replies.
-        private const val SPEAK_STOP_DEBOUNCE_MS = 220L
+        // Debounce before declaring speech finished: 550ms absorbs normal network jitter
+        // gaps between Gemini WebSocket audio chunks without falsely chopping AudioTrack mid-sentence.
+        private const val SPEAK_STOP_DEBOUNCE_MS = 550L
 
         // Post-speech echo guard: 120ms (3 chunks) cleanly absorbs the room reverberation
         // without eating the user's first words when they reply.
@@ -134,6 +135,51 @@ class AudioEngine(private val context: Context) {
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to route audio to loudspeaker: ${e.message}")
+        }
+    }
+
+    private var audioFocusRequest: AudioFocusRequest? = null
+
+    fun requestPlaybackAudioFocus() {
+        try {
+            val am = audioManager ?: return
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                if (audioFocusRequest == null) {
+                    val attrs = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                    audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                        .setAudioAttributes(attrs)
+                        .setAcceptsDelayedFocusGain(false)
+                        .setOnAudioFocusChangeListener { /* Focus changes handled gracefully */ }
+                        .build()
+                }
+                audioFocusRequest?.let { am.requestAudioFocus(it) }
+            } else {
+                @Suppress("DEPRECATION")
+                am.requestAudioFocus(
+                    null,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to request audio focus: ${e.message}")
+        }
+    }
+
+    fun abandonPlaybackAudioFocus() {
+        try {
+            val am = audioManager ?: return
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
+            } else {
+                @Suppress("DEPRECATION")
+                am.abandonAudioFocus(null)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to abandon audio focus: ${e.message}")
         }
     }
 
@@ -258,6 +304,15 @@ class AudioEngine(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to startRecording after watchdog restart: ${e.message}")
         }
+    }
+
+    /**
+     * Re-initializes AudioRecord when waking up from long background standby.
+     * Clears any hardware buffer drift or audio clock stalls caused by background media (YouTube/Reels).
+     */
+    fun refreshAudioRecordOnWake() {
+        Log.i(TAG, "refreshAudioRecordOnWake: Re-initializing AudioRecord after background standby transition...")
+        restartAudioRecordInternal()
     }
 
     @SuppressLint("MissingPermission")
@@ -436,15 +491,15 @@ class AudioEngine(private val context: Context) {
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .build()
 
-            // Robust low-latency buffer prevents underrun while maintaining sub-100ms response
-            val trackBufferBytes = maxOf(minBufSize * 4, 16384)
+            // 48000 bytes = 1.0 second of buffer at 24kHz 16-bit mono.
+            // Generous buffer headroom prevents hardware underruns, clicks, or voice stutter during network jitter
+            val trackBufferBytes = maxOf(minBufSize * 6, 48000)
 
             AudioTrack.Builder()
                 .setAudioAttributes(attributes)
                 .setAudioFormat(format)
                 .setBufferSizeInBytes(trackBufferBytes)
                 .setTransferMode(AudioTrack.MODE_STREAM)
-                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                 .build().apply { play() }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to create AudioTrack: ${e.message}", e)
@@ -491,12 +546,32 @@ class AudioEngine(private val context: Context) {
 
             while (isActive) {
                 try {
+                    // Jitter cushion: ensure initial buffer has at least 1-2 chunks before beginning playback
+                    if (!prebufferDone) {
+                        if (playbackQueue.isEmpty()) {
+                            delay(10)
+                            continue
+                        }
+                        var totalQueuedBytes = 0
+                        for (qChunk in playbackQueue) {
+                            totalQueuedBytes += qChunk.size
+                            if (totalQueuedBytes >= PREBUFFER_BYTES) break
+                        }
+                        if (totalQueuedBytes >= PREBUFFER_BYTES || playbackQueue.size >= 2) {
+                            prebufferDone = true
+                        } else {
+                            delay(15)
+                            continue
+                        }
+                    }
+
                     val chunk = playbackQueue.poll()
                     if (chunk != null) {
                         silenceSinceMs = 0L
                         if (!isSpeaking) {
                             isSpeaking = true
                             speakingStartTimeMs = System.currentTimeMillis()
+                            requestPlaybackAudioFocus()
                             synchronized(trackLock) {
                                 try {
                                     if (audioTrack == null || audioTrack?.state != AudioTrack.STATE_INITIALIZED) {
@@ -512,9 +587,6 @@ class AudioEngine(private val context: Context) {
                             }
                             try { withContext(Dispatchers.Main) { onSpeakingStarted?.invoke() } } catch (_: Exception) {}
                         }
-
-                        // Instant playback: start writing directly to AudioTrack with zero delay
-                        prebufferDone = true
 
                         synchronized(trackLock) {
                             if (audioTrack == null || audioTrack?.state != AudioTrack.STATE_INITIALIZED) {
@@ -549,14 +621,7 @@ class AudioEngine(private val context: Context) {
                                 prebufferByteCount = 0
                                 prebufferDone = false
                                 silenceSinceMs = 0L
-                                synchronized(trackLock) {
-                                    try {
-                                        if (audioTrack?.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                                            audioTrack?.pause()
-                                            // Do NOT flush() here: let trailing samples play out naturally to avoid chopped words
-                                        }
-                                    } catch (_: Exception) {}
-                                }
+                                abandonPlaybackAudioFocus()
                                 Log.i(TAG, "Audio playback turn finished naturally, mic unblocked")
                                 try { withContext(Dispatchers.Main) { onSpeakingStopped?.invoke() } } catch (_: Exception) {}
                             }
@@ -591,6 +656,7 @@ class AudioEngine(private val context: Context) {
         isSpeaking = false
         isStreamingPaused = false
         lastSpeakingEndTimeMs = System.currentTimeMillis()
+        abandonPlaybackAudioFocus()
         engineScope.launch(Dispatchers.Main) {
             onSpeakingStopped?.invoke()
         }
@@ -643,6 +709,7 @@ class AudioEngine(private val context: Context) {
         externalSpeakingTimeoutJob?.cancel()
         prebufferByteCount = 0
         prebufferDone = false
+        abandonPlaybackAudioFocus()
         // Thread-safe: dispatch to main thread since callers may be on any thread
         engineScope.launch(Dispatchers.Main) {
             onSpeakingStopped?.invoke()

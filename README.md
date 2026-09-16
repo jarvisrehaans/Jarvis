@@ -3,7 +3,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Android%208.0%2B-green.svg)](https://developer.android.com)
 [![Kotlin](https://img.shields.io/badge/Kotlin-1.9.22-blue.svg)](https://kotlinlang.org)
 [![Gradle](https://img.shields.io/badge/Gradle-8.4-brightgreen.svg)](https://gradle.org)
-[![Version](https://img.shields.io/badge/Release-v1.7.0-orange.svg)](version.json)
+[![Version](https://img.shields.io/badge/Release-v1.7.4-orange.svg)](version.json)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg)](#)
 
 JARVIS AI is a next-generation autonomous Android AI assistant and system automation suite powered by Google Gemini Live multi-modal streaming, Firebase Realtime Database cloud telemetry, and an advanced Accessibility & Floating Overlay architecture.

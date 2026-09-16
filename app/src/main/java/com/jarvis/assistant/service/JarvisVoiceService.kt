@@ -452,6 +452,12 @@ class JarvisVoiceService : Service() {
         audioEngine?.setStreamingPaused(false)
         audioEngine?.setExternalSpeaking(false)
 
+        // If waking from standby or after long background idle, refresh hardware AudioRecord
+        // to purge any drift or routing glitches caused by background media (YouTube/Reels).
+        if (wasStandby || wasState == ConversationState.SLEEPING) {
+            audioEngine?.refreshAudioRecordOnWake()
+        }
+
         // Reconnect Gemini if needed (e.g. waking from standby or idle period)
         if (geminiLive?.isConnected() != true && isSessionStarted) {
             Log.d("JarvisVoiceService", "ACTIVE: Reconnecting Gemini Live WebSocket...")
