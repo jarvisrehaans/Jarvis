@@ -100,6 +100,7 @@ class JarvisVoiceService : Service() {
 
         private const val IDLE_TO_SLEEP_MS = 120_000L  // 2 minutes of silence -> auto-sleep
         private const val FOLLOW_UP_WINDOW_MS = 30_000L // 30s follow-up window after command execution
+        private const val BACKGROUND_AUTO_STANDBY_MS = 30_000L // 30s auto-standby window in background
         @Volatile var instance: JarvisVoiceService? = null
     }
 
@@ -406,7 +407,7 @@ class JarvisVoiceService : Service() {
 
         // 6. If woke up in background, schedule auto-standby window to listen for user command
         if (!isAppInForeground) {
-            scheduleBackgroundAutoStandby(8000L)
+            scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
         }
     }
 
@@ -514,7 +515,7 @@ class JarvisVoiceService : Service() {
 
     private var backgroundAutoStandbyJob: Job? = null
 
-    private fun scheduleBackgroundAutoStandby(delayMs: Long = 7000L) {
+    private fun scheduleBackgroundAutoStandby(delayMs: Long = BACKGROUND_AUTO_STANDBY_MS) {
         if (isAppInForeground) return
         backgroundAutoStandbyJob?.cancel()
         backgroundAutoStandbyJob = toolScope.launch {
@@ -973,7 +974,7 @@ class JarvisVoiceService : Service() {
                         updateNotificationState(ServiceNotificationState.IDLE)
                     }
                     if (!isAppInForeground) {
-                        scheduleBackgroundAutoStandby(7000L)
+                        scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
                     }
                     dispatchToListeners { it.onSpeakingStopped() }
                 }
@@ -1120,7 +1121,7 @@ class JarvisVoiceService : Service() {
                             updateNotificationState(ServiceNotificationState.IDLE)
                         }
                         if (!isAppInForeground) {
-                            scheduleBackgroundAutoStandby(7000L)
+                            scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
                         }
                         resetTurnState()
                     }
