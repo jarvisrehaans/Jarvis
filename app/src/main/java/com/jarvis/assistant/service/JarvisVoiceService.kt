@@ -409,6 +409,9 @@ class JarvisVoiceService : Service() {
         if (!isAppInForeground) {
             scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
         }
+
+        // 7. Spoken greeting when coming from background to conversation mode: "Hi sir, how can I help you?"
+        triggerWakeGreeting()
     }
 
     private fun vibrateBriefly() {
@@ -444,6 +447,7 @@ class JarvisVoiceService : Service() {
 
         exitStandbyListening()
         geminiLive?.setAudioTransportPaused(false)
+        audioEngine?.setStreamingPaused(false)
         audioEngine?.setExternalSpeaking(false)
 
         // Reconnect Gemini if needed (e.g. waking from standby or idle period)
@@ -539,6 +543,26 @@ class JarvisVoiceService : Service() {
     private var lastAppOpenGreetingTimeMs = 0L
     private val GREETING_COOLDOWN_MS = 45_000L
     @Volatile private var pendingAppOpenGreeting = false
+    @Volatile private var pendingWakeGreeting = false
+
+    fun triggerWakeGreeting() {
+        pendingWakeGreeting = false
+        toolScope.launch {
+            // Wait 400ms so the futuristic ascending wake sound finishes playing
+            delay(400L)
+            val prefs = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
+            val userName = prefs.getString("user_name", "Sir")?.ifBlank { "Sir" } ?: "Sir"
+
+            val greetingPrompt = "Please respond out loud right now. Say: 'Hi $userName, how can I help you?' Keep it to one short sentence. Do not call any tools."
+            Log.i("JarvisVoiceService", "Triggering wake greeting for $userName: $greetingPrompt")
+
+            if (geminiLive?.isConnected() == true) {
+                geminiLive?.sendText(greetingPrompt)
+            } else {
+                pendingWakeGreeting = true
+            }
+        }
+    }
 
     fun triggerAppOpenGreeting() {
         if (!isAppInForeground || isInBackgroundStandby()) return
@@ -546,13 +570,13 @@ class JarvisVoiceService : Service() {
         pendingAppOpenGreeting = false
 
         toolScope.launch {
-            delay(500L) // Allow UI and audio pipeline to settle
+            delay(400L) // Brief delay to let WebSocket session finish initialization
             if (!isAppInForeground || isInBackgroundStandby()) return@launch
 
             val prefs = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
             val userName = prefs.getString("user_name", "Sir")?.ifBlank { "Sir" } ?: "Sir"
 
-            val greetingPrompt = "Please greet the user out loud right now. Say: 'Hello $userName, welcome!' and ask how you can help. Keep it to one short sentence. Do not call any tools."
+            val greetingPrompt = "Please greet the user out loud right now. Say: 'Hi $userName, how can I help you?' Keep it to one short sentence. Do not call any tools."
             Log.i("JarvisVoiceService", "Triggering app-open greeting for $userName: $greetingPrompt")
             geminiLive?.sendText(greetingPrompt)
         }
@@ -566,7 +590,7 @@ class JarvisVoiceService : Service() {
         if (isForeground) {
             cancelBackgroundAutoStandby()
             touchUserActivity()
-            if (_isStandby.value) {
+            if (_isStandby.value || conversationState != ConversationState.ACTIVE) {
                 enterActiveState(fromWakeWord = false)
             }
             // Trigger spoken greeting if cooldown elapsed
@@ -581,21 +605,21 @@ class JarvisVoiceService : Service() {
         } else {
             updateNotificationState(ServiceNotificationState.STANDBY)
             if (screenCaptureEngine == null && cameraVisionEngine?.isCameraStreaming() != true) {
-                enterStandby(sayGoodbye = false, playSound = false)
+                scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
             }
         }
     }
 
     private fun isVoicePlaybackAllowed(): Boolean {
-        // Absolute silence while on standby
-        if (_isStandby.value || conversationState == ConversationState.SLEEPING) return false
+        // Absolute silence while on background standby
+        if (isInBackgroundStandby()) return false
         // Once active (woken up by wake word or in app), always allow voice playback smoothly
         return true
     }
 
-    /** True once background standby is requested, including during cleanup races. */
+    /** True once background standby is active while the app is in the background. */
     private fun isInBackgroundStandby(): Boolean =
-        _isStandby.value || conversationState == ConversationState.SLEEPING
+        !isAppInForeground && (_isStandby.value || conversationState == ConversationState.SLEEPING)
 
     private val currentTurnInputText = StringBuilder()
     private val currentTurnOutputText = StringBuilder()
@@ -970,6 +994,7 @@ class JarvisVoiceService : Service() {
         val now = System.currentTimeMillis()
         if (isAppInForeground && (now - lastAppOpenGreetingTimeMs > GREETING_COOLDOWN_MS)) {
             pendingAppOpenGreeting = true
+            lastAppOpenGreetingTimeMs = now
         }
 
         acquireWakeLock()
@@ -986,7 +1011,7 @@ class JarvisVoiceService : Service() {
                             if (geminiLive?.isConnected() == true) {
                                 geminiLive?.sendAudioChunk(chunk)
                             } else {
-                                while (preConnectionAudioBuffer.size >= 120) {
+                                while (preConnectionAudioBuffer.size >= 15) {
                                     preConnectionAudioBuffer.poll()
                                 }
                                 preConnectionAudioBuffer.offer(chunk)
@@ -1006,6 +1031,8 @@ class JarvisVoiceService : Service() {
                     dispatchToListeners { it.onSpeakingStarted() }
                 }
                 onSpeakingStopped = {
+                    audioEngine?.setStreamingPaused(false)
+                    geminiLive?.setAudioTransportPaused(false)
                     if (!_isStandby.value) {
                         updateNotificationState(ServiceNotificationState.IDLE)
                     }
@@ -1035,6 +1062,10 @@ class JarvisVoiceService : Service() {
                         if (pendingAppOpenGreeting && isAppInForeground) {
                             pendingAppOpenGreeting = false
                             triggerAppOpenGreeting()
+                        }
+                        if (pendingWakeGreeting) {
+                            pendingWakeGreeting = false
+                            triggerWakeGreeting()
                         }
                     } else {
                         audioEngine?.startRecording() // KEEP RECORDING ACTIVE FOR VOSK
@@ -1151,8 +1182,12 @@ class JarvisVoiceService : Service() {
                             }
                             dispatchToListeners { it.onTurnComplete() }
                             touchUserActivity()
+                        } else if (isVoicePlaybackAllowed()) {
+                            // Active conversation: never flush or drop playing speech
+                            dispatchToListeners { it.onTurnComplete() }
+                            touchUserActivity()
                         } else {
-                            // Turn ignored (ambient noise, singing, conversation without wake word)
+                            // Turn ignored ONLY in standby when wake word was absent
                             standbyAudioBuffer.clear()
                             audioEngine?.clearPlaybackQueue()
                             dispatchToListeners { it.onCommandIgnored() }
@@ -1163,6 +1198,7 @@ class JarvisVoiceService : Service() {
                         if (!isAppInForeground) {
                             scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
                         }
+                        audioEngine?.setStreamingPaused(false)
                         resetTurnState()
                     }
                 }
@@ -2207,6 +2243,8 @@ class JarvisVoiceService : Service() {
         isTurnInterrupted = true
         standbyAudioBuffer.clear()
         audioEngine?.clearPlaybackQueue()
+        audioEngine?.setStreamingPaused(false)
+        geminiLive?.setAudioTransportPaused(false)
         geminiLive?.sendInterrupt()
         dispatchToListeners { it.onSpeakingStopped() }
     }

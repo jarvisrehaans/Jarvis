@@ -12,15 +12,15 @@ android {
         applicationId "com.jarvis.assistant"
         minSdk 26
         targetSdk 34
-        versionCode 126
-        versionName "1.7.0"
+        versionCode 127
+        versionName "1.7.1"
     }
 
     buildTypes {
         release {
             minifyEnabled true
             shrinkResources true
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.debug
         }
         debug {

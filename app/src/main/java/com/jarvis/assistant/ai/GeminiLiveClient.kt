@@ -85,13 +85,13 @@ class GeminiLiveClient(
 
     fun connect() {
         isManuallyClosed = false
-        Log.d(TAG, "connect() invoked for model=$modelName, key len=${apiKey.length}")
+        Log.i(TAG, "connect() invoked for model=$modelName, key len=${apiKey.length}")
         val url = "$BASE_WS_URL?key=$apiKey"
         val request = Request.Builder().url(url).build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.d(TAG, "WebSocket opened")
+                Log.i(TAG, "WebSocket opened successfully to Gemini Live")
                 isSetupComplete = false
                 reconnectAttempt = 0
                 sendSetupMessage(webSocket)
@@ -986,12 +986,12 @@ class GeminiLiveClient(
         ws.send(setup.toString())
     }
 
-    /** Send a chunk of 16kHz mono PCM16 mic audio. */
-    fun sendAudioChunk(pcmBytes: ByteArray) {
+    /** Send a real-time audio chunk (16kHz, 16-bit PCM, mono) to Gemini Live. */
+    fun sendAudioChunk(pcmChunk: ByteArray) {
         if (!isSetupComplete || isAudioTransportPaused) return
         lastAudioSentTimeMs = System.currentTimeMillis()
         try {
-            val b64 = Base64.encodeToString(pcmBytes, Base64.NO_WRAP)
+            val b64 = Base64.encodeToString(pcmChunk, Base64.NO_WRAP)
             val msg = JSONObject().apply {
                 put("realtime_input", JSONObject().apply {
                     put("audio", JSONObject().apply {
@@ -1039,6 +1039,7 @@ class GeminiLiveClient(
     /** Send a free-form text turn to JARVIS (e.g. text chat, phone-action confirmations). */
     fun sendText(text: String, turnComplete: Boolean = true) {
         try {
+            Log.i(TAG, "sendText invoked: '$text' (connected=${isConnected()})")
             val msg = JSONObject().apply {
                 put("client_content", JSONObject().apply {
                     put("turns", JSONArray().put(JSONObject().apply {
@@ -1048,7 +1049,8 @@ class GeminiLiveClient(
                     put("turn_complete", turnComplete)
                 })
             }
-            webSocket?.send(msg.toString())
+            val sent = webSocket?.send(msg.toString()) ?: false
+            Log.i(TAG, "sendText dispatched to socket: sent=$sent")
         } catch (e: Exception) {
             Log.e(TAG, "sendText failed: ${e.message}")
             onError?.invoke("Failed to send text: ${e.message}")
@@ -1095,10 +1097,12 @@ class GeminiLiveClient(
     private fun handleServerMessage(text: String) {
         try {
             lastServerMessageTimeMs = System.currentTimeMillis()
+            Log.i(TAG, "handleServerMessage: ${text.take(160)}")
             val json = JSONObject(text)
 
-            if (json.has("setupComplete")) {
+            if (json.has("setupComplete") || json.has("setup_complete")) {
                 isSetupComplete = true
+                Log.i(TAG, "Gemini Live Setup Complete! Ready for realtime audio streaming.")
                 startKeepAlive()
                 startSessionRenewalTimer()
                 startIdleSessionMonitor()
@@ -1108,18 +1112,19 @@ class GeminiLiveClient(
 
             // Session resumption update: capture the handle for future reconnects
             val resumptionUpdate = json.optJSONObject("sessionResumptionUpdate")
+                ?: json.optJSONObject("session_resumption_update")
             if (resumptionUpdate != null) {
                 val newHandle = resumptionUpdate.optString("newHandle", "")
                     .ifBlank { resumptionUpdate.optString("new_handle", "") }
                 if (newHandle.isNotBlank()) {
                     sessionResumptionHandle = newHandle
-                    Log.d(TAG, "Session resumption handle updated (len=${newHandle.length})")
+                    Log.i(TAG, "Session resumption handle updated (len=${newHandle.length})")
                 }
                 // Don't return — may have other content in this message
             }
 
             // GoAway: server warns ~60s before forced disconnect
-            val goAway = json.optJSONObject("goAway")
+            val goAway = json.optJSONObject("goAway") ?: json.optJSONObject("go_away")
             if (goAway != null) {
                 val timeLeftMs = goAway.optLong("timeLeft", 60_000L)
                 Log.w(TAG, "GoAway received — server will disconnect in ${timeLeftMs / 1000}s. Proactively reconnecting...")
@@ -1153,9 +1158,10 @@ class GeminiLiveClient(
             }
 
             // Gemini decided to invoke one of our declared tools (e.g. open_app)
-            val toolCall = json.optJSONObject("toolCall")
+            val toolCall = json.optJSONObject("toolCall") ?: json.optJSONObject("tool_call")
             if (toolCall != null) {
                 val functionCalls = toolCall.optJSONArray("functionCalls")
+                    ?: toolCall.optJSONArray("function_calls")
                 if (functionCalls != null) {
                     for (i in 0 until functionCalls.length()) {
                         val call = functionCalls.getJSONObject(i)
@@ -1163,6 +1169,7 @@ class GeminiLiveClient(
                         val id = call.optString("id", "")
                         val args = call.optJSONObject("args") ?: JSONObject()
                         if (name.isNotEmpty()) {
+                            Log.i(TAG, "Gemini called tool: '$name' (id=$id)")
                             onToolCall?.invoke(name, args, id)
                         }
                     }
@@ -1170,50 +1177,63 @@ class GeminiLiveClient(
                 return
             }
 
-            val serverContent = json.optJSONObject("serverContent") ?: return
+            val serverContent = json.optJSONObject("serverContent")
+                ?: json.optJSONObject("server_content")
+                ?: return
 
             if (serverContent.optBoolean("interrupted", false)) {
-                Log.d(TAG, "Server signaled speech interrupted")
+                Log.i(TAG, "Server signaled speech interrupted")
                 onInterrupted?.invoke()
-                return
+                // Do NOT return — process any modelTurn audio and turnComplete in this same message
             }
 
             // Parse transcripts FIRST so wake word detection is evaluated before audio chunks are processed
-            serverContent.optJSONObject("outputTranscription")?.let {
+            val outTrans = serverContent.optJSONObject("outputTranscription")
+                ?: serverContent.optJSONObject("output_transcription")
+            outTrans?.let {
                 val t = it.optString("text", "")
                 if (t.isNotEmpty()) {
                     lastInteractionTimeMs = System.currentTimeMillis()
+                    Log.i(TAG, "Gemini Live output transcript: '$t'")
                     onOutputTranscript?.invoke(t)
                 }
             }
 
-            serverContent.optJSONObject("inputTranscription")?.let {
+            val inTrans = serverContent.optJSONObject("inputTranscription")
+                ?: serverContent.optJSONObject("input_transcription")
+            inTrans?.let {
                 val t = it.optString("text", "")
                 if (t.isNotEmpty()) {
                     lastInteractionTimeMs = System.currentTimeMillis()
+                    Log.i(TAG, "Gemini Live input transcript: '$t'")
                     onInputTranscript?.invoke(t)
                 }
             }
 
             // Audio + text parts from the model's turn
             val modelTurn = serverContent.optJSONObject("modelTurn")
+                ?: serverContent.optJSONObject("model_turn")
             val parts = modelTurn?.optJSONArray("parts")
             if (parts != null) {
                 for (i in 0 until parts.length()) {
                     val part = parts.getJSONObject(i)
-                    val inlineData = part.optJSONObject("inlineData") ?: part.optJSONObject("inline_data") ?: part.optJSONObject("audio")
+                    val inlineData = part.optJSONObject("inlineData")
+                        ?: part.optJSONObject("inline_data")
+                        ?: part.optJSONObject("audio")
                     if (inlineData != null) {
                         val b64Audio = inlineData.optString("data", "")
                         if (b64Audio.isNotEmpty()) {
                             val bytes = Base64.decode(b64Audio, Base64.NO_WRAP)
+                            Log.i(TAG, "Received audio chunk from Gemini (${bytes.size} bytes)")
                             onAudioReceived?.invoke(bytes)
                         }
                     }
                 }
             }
 
-            if (serverContent.optBoolean("turnComplete", false)) {
+            if (serverContent.optBoolean("turnComplete", false) || serverContent.optBoolean("turn_complete", false)) {
                 lastInteractionTimeMs = System.currentTimeMillis()
+                Log.i(TAG, "Gemini Live turnComplete received")
                 triggerDebouncedTurnComplete()
             }
         } catch (e: Exception) {
