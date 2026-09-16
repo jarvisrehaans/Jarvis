@@ -121,6 +121,7 @@ class JarvisVoiceService : Service() {
         fun onScreenShareStateChanged(isSharing: Boolean) {}
         fun onCameraVisionStateChanged(isActive: Boolean, isFront: Boolean) {}
         fun onResearchStateChanged(isSearching: Boolean, query: String) {}
+        fun onStandbyStateChanged(isStandby: Boolean) {}
         fun onShutdownRequested() {}
     }
 
@@ -292,8 +293,9 @@ class JarvisVoiceService : Service() {
         autoSleepJob?.cancel()
         activeFollowUpJob?.cancel()
 
-        // 5. Update notification to show standby
+        // 5. Update notification to show standby & notify UI
         updateNotificationState(ServiceNotificationState.STANDBY)
+        dispatchToListeners { it.onStandbyStateChanged(true) }
 
         // 6. Pre-warm in-memory recognizer
         prepareVoskRecognizer()
@@ -466,6 +468,7 @@ class JarvisVoiceService : Service() {
         startIdleTimer()
         startConnectionHealthCheck()
         updateNotificationState(ServiceNotificationState.LISTENING)
+        dispatchToListeners { it.onStandbyStateChanged(false) }
 
         Log.d("JarvisVoiceService", "ACTIVE: Full conversation mode enabled (was $wasState, standby=$wasStandby, wakeWord=$fromWakeWord)")
     }

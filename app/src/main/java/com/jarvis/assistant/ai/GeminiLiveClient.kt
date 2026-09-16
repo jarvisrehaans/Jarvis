@@ -123,6 +123,10 @@ class GeminiLiveClient(
                     isRenewingSession = false
                     return
                 }
+                if (isManuallyClosed) {
+                    Log.d(TAG, "WebSocket closed manually; suppressing auto-reconnect.")
+                    return
+                }
                 scheduleReconnect()
             }
 

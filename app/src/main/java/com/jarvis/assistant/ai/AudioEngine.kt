@@ -318,9 +318,9 @@ class AudioEngine(private val context: Context) {
                             val rms = calculateRms(chunk)
                             val now = System.currentTimeMillis()
 
-                            // Auto-heal stuck isSpeaking state if speaker has been truly quiet/deadlocked for 3s
+                            // Auto-heal stuck isSpeaking state if speaker has been truly quiet/deadlocked for 8s
                             val queueIdleDuration = if (lastQueuedTimeMs > 0L) (now - lastQueuedTimeMs) else (now - speakingStartTimeMs)
-                            if (isSpeaking && playbackQueue.isEmpty() && queueIdleDuration > 3_000L) {
+                            if (isSpeaking && playbackQueue.isEmpty() && (playbackJob?.isActive != true || queueIdleDuration > 8_000L)) {
                                 Log.w(TAG, "Watchdog: clearing stuck isSpeaking flag (queue idle ${queueIdleDuration}ms) to restore mic streaming")
                                 isSpeaking = false
                                 isStreamingPaused = false
@@ -426,7 +426,7 @@ class AudioEngine(private val context: Context) {
             )
 
             val attributes = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
 

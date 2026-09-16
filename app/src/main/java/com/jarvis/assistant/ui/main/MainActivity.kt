@@ -232,8 +232,8 @@ class MainActivity : AppCompatActivity() {
         override fun onAmplitudeChanged(rms: Float) {
             runOnUiThread {
                 val speaking = voiceService?.isCurrentlySpeaking() == true
-                val amplified = if (speaking) 0.1f else (rms * 8f).coerceIn(0f, 1f)
-                updateOrbAudioLevel(if (speaking) rms else amplified)
+                val amplified = if (speaking) (rms * 12f).coerceIn(0.12f, 1f) else (rms * 8f).coerceIn(0f, 1f)
+                updateOrbAudioLevel(amplified)
                 updateBarAudioLevel(amplified)
             }
         }
@@ -249,6 +249,17 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 setOrbState(if (isMuted) OrbState.IDLE else OrbState.LISTENING)
                 setActiveMode(false)
+            }
+        }
+
+        override fun onStandbyStateChanged(isStandby: Boolean) {
+            runOnUiThread {
+                if (isStandby) {
+                    setOrbState(OrbState.IDLE)
+                    setActiveMode(false)
+                } else {
+                    setOrbState(if (isMuted) OrbState.IDLE else OrbState.LISTENING)
+                }
             }
         }
 
