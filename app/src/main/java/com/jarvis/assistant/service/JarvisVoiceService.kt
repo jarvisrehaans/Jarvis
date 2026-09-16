@@ -617,9 +617,9 @@ class JarvisVoiceService : Service() {
         return true
     }
 
-    /** True once background standby is active while the app is in the background. */
+    /** True once background standby is active. */
     private fun isInBackgroundStandby(): Boolean =
-        !isAppInForeground && (_isStandby.value || conversationState == ConversationState.SLEEPING)
+        _isStandby.value || conversationState == ConversationState.SLEEPING
 
     private val currentTurnInputText = StringBuilder()
     private val currentTurnOutputText = StringBuilder()
@@ -813,28 +813,14 @@ class JarvisVoiceService : Service() {
     }
 
     fun performBackgroundModeIntent() {
-        Log.d("JarvisVoiceService", "Executing BackgroundModeIntent — transitioning to background mode...")
+        Log.d("JarvisVoiceService", "Executing BackgroundModeIntent — transitioning JARVIS to background standby mode...")
 
         // Unblock any external speaking flag so mic streams freely
         audioEngine?.setExternalSpeaking(false)
 
-        // Minimize active activity to background
-        Handler(Looper.getMainLooper()).post {
-            try {
-                MainActivity.instance?.moveTaskToBack(true)
-            } catch (_: Exception) {}
-        }
-
-        // Navigate to Android home screen
-        val startMain = Intent(Intent.ACTION_MAIN).apply {
-            addCategory(Intent.CATEGORY_HOME)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        com.jarvis.assistant.util.ActivityLauncherHelper.startActivitySafely(this, startMain)
-
-        // Minimizing to home and explicitly entering standby mode (plays standby sound & starts wake listening)
-        isAppInForeground = false
-        enterStandby(sayGoodbye = false)
+        // Enter standby mode (plays sleek descending sci-fi chime & starts offline wake word listening)
+        // Does NOT close any open apps or navigate away from the user's current screen.
+        enterStandby(sayGoodbye = false, playSound = true)
     }
 
     fun performShowYourselfIntent() {
