@@ -43,7 +43,8 @@ class ScreenCaptureEngine(
     companion object {
         private const val TAG = "ScreenCaptureEngine"
         private const val CAPTURE_INTERVAL_MS = 1000L // 1 FPS optimal rate for Google Gemini Multimodal Live API
-        private const val TARGET_CAPTURE_WIDTH = 440
+        private const val TARGET_CAPTURE_WIDTH = 720 // 720p HD resolution for crisp, legible live text & UI elements
+        private const val JPEG_QUALITY = 70 // Optimal visual fidelity without excess payload overhead
     }
 
     fun start() {
@@ -70,8 +71,11 @@ class ScreenCaptureEngine(
         // Enforce even dimensions for hardware display buffers
         if (width % 2 != 0) width--
         if (height % 2 != 0) height--
-        if (width <= 0) width = 440
-        if (height <= 0) height = 960
+        if (width <= 0) width = 720
+        if (height <= 0) height = 1600
+
+        // Proportional density scale: ensures VirtualDisplay maintains correct dp dimensions (not crushed/squashed)
+        val virtualDensity = (density * scale).toInt().coerceAtLeast(120)
 
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3)
         imageReader?.setOnImageAvailableListener({ reader ->
@@ -94,14 +98,14 @@ class ScreenCaptureEngine(
             "JarvisScreenCapture",
             width,
             height,
-            density,
+            virtualDensity,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             imageReader?.surface,
             null,
             handler
         )
 
-        Log.d(TAG, "ScreenCaptureEngine live vision stream started at ${width}x${height} (~1 FPS)")
+        Log.d(TAG, "ScreenCaptureEngine live vision stream started at ${width}x${height} (${virtualDensity}dpi, ~1 FPS)")
     }
 
     /**
@@ -133,47 +137,39 @@ class ScreenCaptureEngine(
             val validRowBytes = pixelStride * imgWidth
             val rowPadding = rowStride - validRowBytes
 
-            val bitmap: Bitmap
-            if (rowPadding == 0) {
+            val bitmap = Bitmap.createBitmap(imgWidth, imgHeight, Bitmap.Config.ARGB_8888)
+            val requiredBytes = imgWidth * imgHeight * 4 // ARGB_8888 = 4 bytes/pixel
+
+            if (rowPadding == 0 && buffer.remaining() >= requiredBytes) {
                 // No padding — buffer is tightly packed, safe to copy directly
-                bitmap = Bitmap.createBitmap(imgWidth, imgHeight, Bitmap.Config.ARGB_8888)
-                // Guard: ensure buffer has enough data before copying
-                val requiredBytes = imgWidth * imgHeight * 4 // ARGB_8888 = 4 bytes/pixel
-                if (buffer.remaining() >= requiredBytes) {
-                    bitmap.copyPixelsFromBuffer(buffer)
-                } else {
-                    // Insufficient buffer data — skip this frame silently
-                    bitmap.recycle()
-                    return
-                }
+                bitmap.copyPixelsFromBuffer(buffer)
             } else {
                 // Row padding present — copy row-by-row into a clean, tightly-packed buffer
-                // to avoid "Buffer not large enough for pixels" crash
                 val cleanBuffer = ByteBuffer.allocateDirect(validRowBytes * imgHeight)
+                val bufferCap = buffer.capacity()
                 for (row in 0 until imgHeight) {
                     val srcOffset = row * rowStride
-                    // Guard: don't read beyond the actual GPU buffer
-                    if (srcOffset + validRowBytes > buffer.capacity()) break
-                    buffer.position(srcOffset)
-                    buffer.limit(srcOffset + validRowBytes)
-                    cleanBuffer.put(buffer)
+                    if (srcOffset >= bufferCap) break
+                    val bytesToCopy = minOf(validRowBytes, bufferCap - srcOffset)
+                    if (bytesToCopy > 0) {
+                        buffer.position(srcOffset)
+                        buffer.limit(srcOffset + bytesToCopy)
+                        cleanBuffer.put(buffer)
+                    }
+                    if (bytesToCopy < validRowBytes) {
+                        cleanBuffer.put(ByteArray(validRowBytes - bytesToCopy))
+                    }
                 }
                 cleanBuffer.rewind()
-
-                bitmap = Bitmap.createBitmap(imgWidth, imgHeight, Bitmap.Config.ARGB_8888)
-                if (cleanBuffer.remaining() >= imgWidth * imgHeight * 4) {
-                    bitmap.copyPixelsFromBuffer(cleanBuffer)
-                } else {
-                    bitmap.recycle()
-                    return
-                }
+                bitmap.copyPixelsFromBuffer(cleanBuffer)
             }
 
             val baos = ByteArrayOutputStream()
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 35, baos)
+            bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, baos)
             val jpegBytes = baos.toByteArray()
             bitmap.recycle()
 
+            Log.d(TAG, "processNextFrame: captured ${imgWidth}x${imgHeight} frame (${jpegBytes.size} bytes)")
             onFrameCaptured(jpegBytes)
         } catch (e: Throwable) {
             // Catch ALL throwables including OutOfMemoryError, RuntimeException from

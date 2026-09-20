@@ -1,8 +1,8 @@
 {
-  "versionCode": 138,
-  "versionName": "1.8.2",
+  "versionCode": 139,
+  "versionName": "1.8.3",
   "apkName": "Jarvis-AI-Release.apk",
   "downloadUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
   "apkUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
-  "changelog": "⚡ What's New & Fixed in v1.8.2:\n\n• 🔊 Background Wake-Talk-Listen Fix: JARVIS now properly speaks and continues listening after wake word detection in background mode. Eliminated the bug where JARVIS would wake up but immediately go silent or return to standby.\n\n• 🛡️ Wake Session Protection: New isWakeWordActiveSession flag prevents aggressive background auto-standby timers from killing conversations mid-response. The entire wake→speak→listen→respond cycle is now protected.\n\n• ⏱️ Extended Background Window: Background auto-standby increased from 12s to 30s, with smart deferral if JARVIS is speaking, in follow-up, or processing a wake session.\n\n• 🔄 Smart Greeting Retry: Wake greeting now waits up to 5 extra seconds for Gemini reconnection, preventing silent wakes when WebSocket is re-establishing.\n\n• 📱 Graceful Background Transition: Swiping from recents no longer immediately kills the conversation — active sessions are preserved with scheduled standby."
+  "changelog": "⚡ What's New & Fixed in v1.8.3:\n\n• 👁️ Real-Time Live Screen Vision Fix: Fixed Gemini Live WebSocket payload to use official media_chunks format. JARVIS now receives real-time mobile screen frames at 1 FPS and accurately sees your active screen.\n\n• 📱 High-Definition 720p Screen Capture: Upgraded screen capture to crisp 720p with 70% JPEG quality and scaled VirtualDisplay DPI, eliminating blurry text and crushed Android layouts.\n\n• 🗣️ Voice-Activated Screen Sharing: Added control_screen_share tool. You can now start or stop screen sharing simply by saying 'Jarvis screen share karo' or 'screen dekho'.\n\n• 🎯 Strict Anti-Hallucination: Enhanced vision instructions to prevent JARVIS from assuming the user is on the home screen or looking at apps when an app or game is open."
 }

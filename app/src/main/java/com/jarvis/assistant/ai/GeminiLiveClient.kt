@@ -798,6 +798,24 @@ class GeminiLiveClient(
                             })
                         })
                         put(JSONObject().apply {
+                            put("name", "control_screen_share")
+                            put("description",
+                                "Controls live mobile screen sharing vision. Actions: 'start' (starts live screen share), 'stop' (stops screen share), 'status' (checks if screen share is running). " +
+                                "Use whenever the user asks to share screen, start screen share, see the screen, stop screen share, or close screen vision " +
+                                "(e.g. \"start screen share\", \"screen share karo\", \"screen dekho\", \"live screen share\", \"screen share on karo\", \"stop screen share\", \"screen share band karo\").")
+                            put("parameters", JSONObject().apply {
+                                put("type", "OBJECT")
+                                put("properties", JSONObject().apply {
+                                    put("action", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("enum", JSONArray().apply { put("start"); put("stop"); put("status") })
+                                        put("description", "'start' to begin live screen share, 'stop' to stop screen share, 'status' to check if screen share is running.")
+                                    })
+                                })
+                                put("required", JSONArray().put("action"))
+                            })
+                        })
+                        put(JSONObject().apply {
                             put("name", "analyze_scene")
                             put("description",
                                 "Analyzes camera or screen visual view. Actions: 'read_text' (OCR), 'object_recognition', 'describe_scene', 'full_analysis'. E.g. 'read this text', 'what object is this?', 'what do you see?'.")
@@ -1214,13 +1232,18 @@ class GeminiLiveClient(
             val b64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
             val msg = JSONObject().apply {
                 put("realtime_input", JSONObject().apply {
-                    put("video", JSONObject().apply {
-                        put("mime_type", "image/jpeg")
-                        put("data", b64)
+                    put("media_chunks", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("mime_type", "image/jpeg")
+                            put("data", b64)
+                        })
                     })
                 })
             }
-            webSocket?.send(msg.toString())
+            val sent = webSocket?.send(msg.toString()) ?: false
+            if (sent) {
+                Log.d(TAG, "sendVideoFrame: sent ${jpegBytes.size} bytes JPEG frame to Gemini Live")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "sendVideoFrame failed: ${e.message}")
         }

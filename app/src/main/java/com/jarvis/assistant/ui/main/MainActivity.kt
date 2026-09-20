@@ -49,6 +49,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val ACTION_JARVIS_SHUTDOWN = "com.jarvis.assistant.ACTION_SHUTDOWN"
+        const val ACTION_REQUEST_SCREEN_SHARE = "com.jarvis.assistant.action.REQUEST_SCREEN_SHARE"
         private const val ALL_PERMISSIONS_REQUEST_CODE = 1010
         var instance: MainActivity? = null
     }
@@ -140,6 +141,10 @@ class MainActivity : AppCompatActivity() {
         if (result.resultCode == RESULT_OK && result.data != null) {
             voiceService?.startScreenShare(result.resultCode, result.data!!)
             Toast.makeText(this, "Vision Screen Share Started", Toast.LENGTH_SHORT).show()
+            updateVisionVisuals(true)
+            if (intent?.action == ACTION_REQUEST_SCREEN_SHARE) {
+                moveTaskToBack(true)
+            }
         } else {
             voiceService?.ensureMicrophoneForegroundService()
             Toast.makeText(this, "Screen Share permission canceled", Toast.LENGTH_SHORT).show()
@@ -497,6 +502,7 @@ class MainActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        handleSpecialIntent(intent)
     }
 
     override fun onStart() {
@@ -531,9 +537,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun handleSpecialIntent(intent: Intent?) {
+        if (intent?.action == ACTION_REQUEST_SCREEN_SHARE) {
+            val service = voiceService
+            if (service?.isScreenSharing() == true) {
+                Toast.makeText(this, "Screen Share is already active", Toast.LENGTH_SHORT).show()
+                return
+            }
+            val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+            screenCaptureLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         instance = this
+        handleSpecialIntent(intent)
 
         // Check for updates every time app is opened or brought back from recents
         com.jarvis.assistant.update.UpdateManager.checkForUpdates(this)

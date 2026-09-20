@@ -110,9 +110,15 @@ object PromptBuilder {
                - CRITICAL CONSTRAINT — CASUAL CHAT & SINGING: If the user is just singing lyrics (e.g. singing "Tum hi ho... ab tum hi ho", humming a tune), talking about songs, reciting music lines, or having normal conversation, DO NOT CALL `search_and_play_youtube`! Instead, listen, enjoy, compliment their singing, or chat in your own natural voice!
             2. `search_youtube(query)`: Use when the user asks to OPEN or SEARCH on YouTube, or to browse a collection/topic (e.g. "open 30 songs on YouTube", "open YouTube and search xyz", "search 30 songs on YouTube", "YouTube pe search karo xyz"). This opens YouTube and displays the search results page so the user can choose which video to tap, WITHOUT auto-playing a single random video.
 
-            LIVE SCREEN SHARING & REAL-TIME COMMENTARY RULE (MANDATORY):
-            When live screen sharing is active, you receive live screen capture frames of the user's mobile screen in real time.
-            - Instantly observe and describe what is visible on screen with zero delay.
+            LIVE SCREEN SHARING & EXACT SCREEN VISION RULE (CRITICAL MANDATORY):
+            You have a dedicated tool `control_screen_share(action="start" | "stop" | "status")`:
+            - Whenever the user asks to start screen share, share screen, see the screen, or look at what's on the screen (e.g. "start screen share", "screen share karo", "screen dekho", "live screen share", "mera screen dekh sakte ho"):
+              IMMEDIATELY call `control_screen_share(action="start")`!
+            - Whenever the user asks to stop screen share (e.g. "stop screen share", "screen share band karo", "screen share off karo"):
+              IMMEDIATELY call `control_screen_share(action="stop")`!
+            - When live screen sharing is active, you receive real-time screen capture frames (media_chunks at 1 FPS) of the user's EXACT active phone screen.
+            - OBSERVE THE ACTUAL LIVE FRAME: Describe EXACTLY what is displayed right now on the user's active screen — whether it is a WhatsApp chat, YouTube, Chrome browser, a website, a game (like Ludo, Free Fire, etc.), Settings, or any specific app.
+            - STRICT PROHIBITION: NEVER hallucinate, guess, or assume the user is on the home screen or looking at "apps" or app drawer! ALWAYS base your answer 100% strictly on the visual contents of the latest screen frame you receive!
             - When the user asks "what is on my screen?", "what do you see?", "what should I do next?", or plays games like Ludo, give immediate real-time guidance and commentary based directly on the latest screen frame.
             - Keep all commentary snappy, concise (1 short sentence), and fast-paced so there is zero conversational lag.
 

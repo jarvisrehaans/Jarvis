@@ -2082,6 +2082,37 @@ class JarvisVoiceService : Service() {
                     result.put("success", ok)
                     result.put("message", msg)
                 }
+                "control_screen_share" -> {
+                    val action = args.optString("action", "start").lowercase().trim()
+                    when (action) {
+                        "stop", "off", "end", "close" -> {
+                            if (isScreenSharing()) {
+                                stopScreenShare()
+                                result.put("success", true)
+                                result.put("message", "Screen share stopped, Sir.")
+                            } else {
+                                result.put("success", true)
+                                result.put("message", "Screen share is not active, Sir.")
+                            }
+                        }
+                        "status" -> {
+                            val active = isScreenSharing()
+                            result.put("success", true)
+                            result.put("is_active", active)
+                            result.put("message", if (active) "Screen share is actively streaming live frames, Sir." else "Screen share is currently off, Sir.")
+                        }
+                        else -> {
+                            if (isScreenSharing()) {
+                                result.put("success", true)
+                                result.put("message", "Screen share is already active and streaming live frames, Sir. I can see your screen.")
+                            } else {
+                                requestStartScreenShare()
+                                result.put("success", true)
+                                result.put("message", "Starting live screen share, Sir. Please tap Start Now on the screen prompt.")
+                            }
+                        }
+                    }
+                }
                 "analyze_scene" -> {
                     val mode = args.optString("mode", "full_analysis")
                     if (!isCameraVisionActive() && !isScreenSharing()) {
@@ -2776,7 +2807,7 @@ class JarvisVoiceService : Service() {
 
             // Gemini Live natural voice notification
             currentTurnHasWakeWord = true
-            geminiLive?.sendText("[SYSTEM EVENT] Live screen sharing has started. You are now receiving continuous mobile screen frames in real time. Please briefly confirm to the user in your natural voice that you can see their screen.", turnComplete = true)
+            geminiLive?.sendText("[SYSTEM EVENT] Live screen sharing has started. You are now receiving continuous mobile screen frames in real time (media_chunks at 1 FPS). Describe EXACTLY what app or content is currently visible on the user's active screen right now. Do NOT claim they are on the home screen or looking at apps if an app or content is open.", turnComplete = true)
         } catch (e: Throwable) {
             // Catch ALL throwables including SecurityException, IllegalStateException, RuntimeException
             // from MediaProjection failures. Log and gracefully stop instead of crashing the entire app.
@@ -2787,6 +2818,14 @@ class JarvisVoiceService : Service() {
                 geminiLive?.sendText("[SYSTEM ERROR] Screen sharing could not start due to a system error. Please inform the user that screen sharing failed and ask them to try again.")
             }
         }
+    }
+
+    fun requestStartScreenShare() {
+        val intent = Intent(this, com.jarvis.assistant.ui.main.MainActivity::class.java).apply {
+            action = com.jarvis.assistant.ui.main.MainActivity.ACTION_REQUEST_SCREEN_SHARE
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+        startActivity(intent)
     }
 
     fun stopScreenShare() {
