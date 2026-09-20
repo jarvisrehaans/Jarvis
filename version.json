@@ -1,8 +1,8 @@
 {
-  "versionCode": 133,
-  "versionName": "1.7.7",
+  "versionCode": 134,
+  "versionName": "1.7.8",
   "apkName": "Jarvis-AI-Release.apk",
   "downloadUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
   "apkUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
-  "changelog": "⚡ What's New & Fixed in v1.7.7:\n\n• 📱 Background & Lockscreen Action Execution: Voice actions (e.g. open apps, control flashlight, search YouTube) now reliably execute even when JARVIS is in the background or the app is closed.\n\n• 🎯 Strict Wake Word Filtering: Fixed false triggering on standalone 'hey' — wake detection is now strictly restricted to 'Jarvis' and direct wake phrases.\n\n• 🚀 Enhanced Background Activity Launch: Upgraded Android 14/15 PendingIntent and accessibility launch handlers for seamless app opening from background.\n\n• 👩 Aoede Default Voice: Aoede female voice is now the default voice for all users.\n\n• ⚡ 0ms Hot-Standby & Continuous Hardware Mic: Zero audio clipping with instant response."
+  "changelog": "⚡ What's New & Fixed in v1.7.8:\n\n• 🎯 Ultra-Strict Wake Word Spotting: Wake activation is now strictly restricted to 5 explicit multi-word phrases: 'Hey Jarvis', 'Hello Jarvis', 'Hi Jarvis', 'Wake Jarvis', and 'Wake Up Jarvis'. Standalone single words ('Jarvis', 'Hey', etc.) and ambient room noise will NEVER activate JARVIS.\n\n• 🛡️ Zero Automatic Activation: Eliminated all single-word token triggers, partial 1-word hallucination checks, and background notification spontaneous wakes.\n\n• 📱 Background & Lockscreen Action Execution: Apps, flashlights, and media controls execute reliably from the background.\n\n• ⚡ 0ms Hot-Standby & Continuous Hardware Mic: Instant hands-free conversation with zero mic indicator blinking."
 }
