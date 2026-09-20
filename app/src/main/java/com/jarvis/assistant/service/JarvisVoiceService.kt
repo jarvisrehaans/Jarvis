@@ -466,6 +466,7 @@ class JarvisVoiceService : Service() {
         resetTurnState()
         currentTurnHasWakeWord = true
         userContinuedSpeakingAfterWake = false
+        startFollowUpWindow()
 
         // 5. Reconnect/Unpause Gemini Live & enter ACTIVE conversation
         enterActiveState(fromWakeWord = true)
@@ -504,12 +505,6 @@ class JarvisVoiceService : Service() {
 
     private fun scheduleSmartWakeGreeting() {
         smartGreetingJob?.cancel()
-        // In background mode, do NOT speak an unprovoked greeting.
-        // The futuristic ascending wake chime already alerted the user that JARVIS is listening.
-        // Speaking a greeting in background invites TV/room audio to continue a conversation.
-        if (!isAppInForeground) {
-            return
-        }
         smartGreetingJob = toolScope.launch {
             // Wait 1600ms to see if user is speaking a command after the wake word
             delay(1600L)
@@ -751,11 +746,6 @@ class JarvisVoiceService : Service() {
 
     private fun isVoicePlaybackAllowed(): Boolean {
         if (isInBackgroundStandby()) return false
-        // STRICT: When in background, only play voice aloud if the current turn had a verified wake word
-        // or the user is inside an active follow-up window. Never talk to ambient TV/room noise.
-        if (!isAppInForeground && !currentTurnHasWakeWord && !isInFollowUpWindow) {
-            return false
-        }
         return true
     }
 
@@ -876,9 +866,11 @@ class JarvisVoiceService : Service() {
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
         Log.i("JarvisVoiceService", "App removed from recents — preserving JarvisVoiceService in background!")
+        isAppInForeground = false
         acquireWakeLock()
         ensureMicrophoneForegroundService()
         ensureSessionActive()
+        enterStandby(sayGoodbye = false, playSound = false)
 
         try {
             val restartIntent = Intent(applicationContext, JarvisVoiceService::class.java)

@@ -1,8 +1,8 @@
 {
-  "versionCode": 136,
-  "versionName": "1.8.0",
+  "versionCode": 137,
+  "versionName": "1.8.1",
   "apkName": "Jarvis-AI-Release.apk",
   "downloadUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
   "apkUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
-  "changelog": "⚡ What's New & Fixed in v1.8.0:\n\n• ⚡ Instant & Reliable Wake Spotting: Restored acoustic phonetics (jervis, javis) for natural Indian-English voice recognition. Removed blocking RMS energy filter so normal speaking voice is detected immediately without delay.\n\n• 🛡️ Anti-Flutter TV Noise Debouncer: Partial hypothesis requires 2 consecutive matching chunks (~80ms), completely blocking transient 1-frame noise flutters from TV commercials or ambient chatter.\n\n• 🔒 Background Voice Guard: Unprovoked greetings in the background are disabled, and voice playback remains strictly muted in the background unless the turn has a confirmed wake word."
+  "changelog": "⚡ What's New & Fixed in v1.8.1:\n\n• 🗣️ Background Spoken Greetings & Voice Playback: Fixed background wake response so JARVIS speaks aloud ('Hi Sir, how can I help you?') and answers commands when woken from the background/recents-swiped state.\n\n• ⚡ Instant Follow-Up Window: Automatically activates conversation follow-up upon wake detection so subsequent questions or commands are processed without requiring wake word repetitions.\n\n• 🛡️ Anti-Flutter TV Noise Debouncer: Retains 2-frame debouncing and common TV distractors to eliminate spontaneous activations."
 }
