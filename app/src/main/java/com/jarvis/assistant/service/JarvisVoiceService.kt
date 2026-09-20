@@ -328,15 +328,12 @@ class JarvisVoiceService : Service() {
                     "hey jervis", "hello jervis", "hi jervis", "ok jervis", "okay jervis", "wake up jervis", "jervis",
                     "hey jarves", "hello jarves", "hi jarves", "ok jarves", "okay jarves", "wake up jarves", "jarves",
                     "hey jarviz", "hello jarviz", "hi jarviz", "ok jarviz", "okay jarviz", "wake up jarviz", "jarviz",
-                    "hey service", "hello service", "hi service", "ok service", "okay service", "wake up service", "service",
-                    "hey travis", "hello travis", "hi travis", "ok travis", "okay travis", "wake up travis", "travis",
-                    "haters", "agents", "he does", "dallas", "where of dallas",
                     "hello", "hey", "hi", "ok", "okay", "yes", "no", "stop", "wait", "please",
                     "[unk]"
                 ]""".trimIndent()
                 val rec = Recognizer(model, 16000.0f, grammar)
                 voskRecognizer = rec
-                Log.i("JarvisVoiceService", "Direct Vosk continuous Recognizer initialized with targeted wake grammar + phonetics")
+                Log.i("JarvisVoiceService", "Direct Vosk continuous Recognizer initialized with strict wake grammar")
                 rec
             } catch (e: Exception) {
                 Log.e("JarvisVoiceService", "Failed to create Vosk Recognizer: ${e.message}", e)
@@ -411,21 +408,20 @@ class JarvisVoiceService : Service() {
         }
     }
 
-    private val STANDBY_WAKE_REGEX = Regex("""\b(hey|hi|hello|ok|okay|wake\s+up|where\s+of)?\s*(jarvis|javis|jervis|jarves|jarviz|travis|service|haters|agents|dallas)\b""")
+    private val STANDBY_WAKE_REGEX = Regex("""\b(hey|hi|hello|ok|okay|wake\s+up)?\s*(jarvis|javis|jervis|jarves|jarviz)\b""")
 
     private fun containsStandbyWakeWord(phrase: String): Boolean {
         val clean = phrase.lowercase(Locale.ROOT).trim()
         if (clean.isEmpty() || clean == "[unk]") return false
 
-        // Fast regex match for standard combinations and phonetics
+        // Fast regex match for wake phrases containing jarvis/javis/jervis/jarves/jarviz
         if (STANDBY_WAKE_REGEX.containsMatchIn(clean)) {
             return true
         }
 
-        // Token match for standalone wake tokens and phonetic matches
+        // Token match for standalone wake tokens
         val validWakeTokens = setOf(
-            "jarvis", "javis", "jervis", "jarves", "jarviz", "zarvis", "charvis",
-            "haters", "agents", "dallas"
+            "jarvis", "javis", "jervis", "jarves", "jarviz", "zarvis", "charvis"
         )
         val tokens = clean.split("\\s+".toRegex())
         return tokens.any { validWakeTokens.contains(it) }
@@ -494,10 +490,10 @@ class JarvisVoiceService : Service() {
     private fun scheduleSmartWakeGreeting() {
         smartGreetingJob?.cancel()
         smartGreetingJob = toolScope.launch {
-            // Wait 1200ms to see if user is speaking a command after the wake word
-            delay(1200L)
-            if (userContinuedSpeakingAfterWake || currentTurnInputText.isNotEmpty()) {
-                Log.i("JarvisVoiceService", "User spoke a direct command with/after wake word — suppressing canned greeting.")
+            // Wait 1600ms to see if user is speaking a command after the wake word
+            delay(1600L)
+            if (userContinuedSpeakingAfterWake || currentTurnInputText.isNotEmpty() || audioEngine?.isCurrentlySpeaking() == true) {
+                Log.i("JarvisVoiceService", "User spoke a direct command with/after wake word or audio is playing — suppressing canned greeting.")
                 return@launch
             }
             if (conversationState != ConversationState.ACTIVE || isInBackgroundStandby()) {
@@ -1362,12 +1358,21 @@ class JarvisVoiceService : Service() {
                 }
                 onError = { msg -> dispatchToListeners { it.onError(msg) } }
                 onToolCall = { name, args, callId ->
-                    if (isInBackgroundStandby()) {
-                        Log.d("JarvisVoiceService", "Ignoring stale background tool call '$name'.")
-                        geminiLive?.sendToolResponse(callId, name, JSONObject().put("status", "ignored_background_mode"))
-                    } else if (!isUserMuted) {
+                    Log.i("JarvisVoiceService", "onToolCall received: '$name', args=$args (standby=${_isStandby.value}, state=$conversationState, hasWake=$currentTurnHasWakeWord, followUp=$isInFollowUpWindow, fg=$isAppInForeground)")
+                    if (isUserMuted) {
+                        Log.d("JarvisVoiceService", "Ignoring tool call '$name' because user is muted.")
+                        geminiLive?.sendToolResponse(callId, name, JSONObject().put("status", "muted"))
+                    } else {
+                        // Cancel smart wake greeting immediately so canned greeting does not overwrite or abort the tool
+                        smartGreetingJob?.cancel()
+
                         val fullInput = currentTurnInputText.toString()
-                        val isAllowed = isVoicePlaybackAllowed() || textHasWakeWord(fullInput)
+                        val isAllowed = isAppInForeground ||
+                                currentTurnHasWakeWord ||
+                                isInFollowUpWindow ||
+                                textHasWakeWord(fullInput) ||
+                                !isInBackgroundStandby()
+
                         if (isAllowed) {
                             currentTurnHasWakeWord = true
                             touchUserActivity()
@@ -1381,7 +1386,7 @@ class JarvisVoiceService : Service() {
                             dispatchToListeners { it.onToolCall(name, args, callId) }
                             toolScope.launch { handleToolCall(name, args, callId) }
                         } else {
-                            Log.d("JarvisVoiceService", "Background tool call '$name' ignored without wake word.")
+                            Log.d("JarvisVoiceService", "Background tool call '$name' ignored without wake word or active session.")
                             geminiLive?.sendToolResponse(callId, name, JSONObject().put("status", "ignored_background_mode"))
                         }
                     }

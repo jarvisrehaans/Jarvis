@@ -1,8 +1,8 @@
 {
-  "versionCode": 132,
-  "versionName": "1.7.6",
+  "versionCode": 133,
+  "versionName": "1.7.7",
   "apkName": "Jarvis-AI-Release.apk",
   "downloadUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
   "apkUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
-  "changelog": "⚡ What's New & Fixed in v1.7.6:\n\n• 🎙️ Instant Background Wake Word: Upgraded Vosk recognizer with full acoustic vocabulary and continuous partial hypothesis decoding for immediate response in ambient room noise.\n\n• ⚡ Lightning Hot-Standby: WebSocket transport pause eliminates reconnect delays, providing 0ms latency hands-free activation comparable to Gemini Live.\n\n• 🧠 Zero Audio Clipping & Pre-Roll: Rolling 2-second pre-buffer captures full commands spoken immediately with the wake word (e.g. 'Hey Jarvis open Chrome').\n\n• 🔊 Hardware AGC & Mic Processing: Automatic Gain Control (AGC) hardware effect enabled to amplify faint speech across the room.\n\n• 👩 Aoede Default Voice: Aoede female voice is now the default voice for all users with seamless preference migration.\n\n• 🤖 Smart Greeting Passthrough: Suppresses canned greetings when a direct command is spoken, delivering an ultra-smooth, natural conversation experience."
+  "changelog": "⚡ What's New & Fixed in v1.7.7:\n\n• 📱 Background & Lockscreen Action Execution: Voice actions (e.g. open apps, control flashlight, search YouTube) now reliably execute even when JARVIS is in the background or the app is closed.\n\n• 🎯 Strict Wake Word Filtering: Fixed false triggering on standalone 'hey' — wake detection is now strictly restricted to 'Jarvis' and direct wake phrases.\n\n• 🚀 Enhanced Background Activity Launch: Upgraded Android 14/15 PendingIntent and accessibility launch handlers for seamless app opening from background.\n\n• 👩 Aoede Default Voice: Aoede female voice is now the default voice for all users.\n\n• ⚡ 0ms Hot-Standby & Continuous Hardware Mic: Zero audio clipping with instant response."
 }

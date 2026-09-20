@@ -349,17 +349,17 @@ object AppLauncher {
                 launchIntent.putExtra("android.intent.extra.USER_HANDLE", 0)
             }
 
-            if (launcherApps != null && app.userHandle != null && app.componentName != null) {
-                val targetUser = if (appNumber == 2 && secondaryProfile != null) secondaryProfile else app.userHandle
-                try {
-                    launcherApps.startMainActivity(app.componentName, targetUser, null, null)
+            if (appNumber == 2 && launcherApps != null && secondaryProfile != null && app.componentName != null) {
+                val ok = try {
+                    launcherApps.startMainActivity(app.componentName, secondaryProfile, null, null)
                     true
                 } catch (e: Exception) {
-                    ActivityLauncherHelper.startActivitySafely(context, launchIntent)
+                    false
                 }
-            } else {
-                ActivityLauncherHelper.startActivitySafely(context, launchIntent)
+                if (ok) return true
             }
+
+            return ActivityLauncherHelper.startActivitySafely(context, launchIntent)
         } catch (e: Exception) {
             android.util.Log.e("AppLauncher", "Failed to launch ${app.packageName} (${app.userHandle})", e)
             false

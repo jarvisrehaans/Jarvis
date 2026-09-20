@@ -32,17 +32,31 @@ object ActivityLauncherHelper {
             }
         }
 
-        // 2. PendingIntent approach with background activity start allowance (Android 14+ / API 34)
+        // 2. PendingIntent approach with background activity start allowance (Android 14+ / API 34+)
         try {
             val requestCode = (System.currentTimeMillis() % 10000).toInt()
             val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            val pendingIntent = PendingIntent.getActivity(context, requestCode, intent, flags)
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                val options = ActivityOptions.makeBasic().apply {
-                    setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+            val bundle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                val opts = ActivityOptions.makeBasic()
+                opts.setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+                if (Build.VERSION.SDK_INT >= 35) {
+                    try {
+                        val m = ActivityOptions::class.java.getMethod("setPendingIntentCreatorBackgroundActivityStartMode", Int::class.javaPrimitiveType)
+                        m.invoke(opts, ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+                    } catch (_: Exception) {}
                 }
-                pendingIntent.send(context, 0, null, null, null, null, options.toBundle())
+                opts.toBundle()
+            } else null
+
+            val pendingIntent = if (bundle != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                PendingIntent.getActivity(context, requestCode, intent, flags, bundle)
+            } else {
+                PendingIntent.getActivity(context, requestCode, intent, flags)
+            }
+
+            if (bundle != null) {
+                pendingIntent.send(context, 0, null, null, null, null, bundle)
             } else {
                 pendingIntent.send()
             }
