@@ -229,8 +229,8 @@ class JarvisVoiceService : Service() {
     // --- Standby / Offline Wake Word components (Continuous in-memory Vosk Recognizer) ---
     @Volatile private var voskRecognizer: Recognizer? = null
     private var standbyActivatedTime = 0L
-    // 1.5s cooldown prevents the standby sound tail or immediate echo from falsely re-triggering wake word.
-    private val STANDBY_COOLDOWN_MS = 1500L
+    // 1.0s cooldown prevents the standby sound tail or immediate echo from falsely re-triggering wake word.
+    private val STANDBY_COOLDOWN_MS = 1000L
     private val _isStandby = MutableStateFlow(false)
     val isStandby: StateFlow<Boolean> = _isStandby.asStateFlow()
 
@@ -319,12 +319,24 @@ class JarvisVoiceService : Service() {
         return synchronized(this) {
             if (voskRecognizer != null) return@synchronized voskRecognizer
             try {
-                // Initialize full acoustic recognizer without artificial grammar restrictions.
-                // This decodes natural conversational English accurately and prevents ambient noise
-                // from being forced into a false positive wake word path.
-                val rec = Recognizer(model, 16000.0f)
+                // Kaldi dynamic constrained grammar.
+                // Restricting the search space to wake phrases and phonetics forces Kaldi's acoustic
+                // decoder to match wake words with high probability instead of wandering into 50k dictionary words.
+                val grammar = """[
+                    "hey jarvis", "hello jarvis", "hi jarvis", "ok jarvis", "okay jarvis", "wake up jarvis", "jarvis",
+                    "hey javis", "hello javis", "hi javis", "ok javis", "okay javis", "wake up javis", "javis",
+                    "hey jervis", "hello jervis", "hi jervis", "ok jervis", "okay jervis", "wake up jervis", "jervis",
+                    "hey jarves", "hello jarves", "hi jarves", "ok jarves", "okay jarves", "wake up jarves", "jarves",
+                    "hey jarviz", "hello jarviz", "hi jarviz", "ok jarviz", "okay jarviz", "wake up jarviz", "jarviz",
+                    "hey service", "hello service", "hi service", "ok service", "okay service", "wake up service", "service",
+                    "hey travis", "hello travis", "hi travis", "ok travis", "okay travis", "wake up travis", "travis",
+                    "haters", "agents", "he does", "dallas", "where of dallas",
+                    "hello", "hey", "hi", "ok", "okay", "yes", "no", "stop", "wait", "please",
+                    "[unk]"
+                ]""".trimIndent()
+                val rec = Recognizer(model, 16000.0f, grammar)
                 voskRecognizer = rec
-                Log.i("JarvisVoiceService", "Direct Vosk continuous Recognizer initialized with full acoustic vocabulary")
+                Log.i("JarvisVoiceService", "Direct Vosk continuous Recognizer initialized with targeted wake grammar + phonetics")
                 rec
             } catch (e: Exception) {
                 Log.e("JarvisVoiceService", "Failed to create Vosk Recognizer: ${e.message}", e)
@@ -388,6 +400,7 @@ class JarvisVoiceService : Service() {
             val clean = partial.trim().lowercase(Locale.ROOT)
             if (clean.isEmpty() || clean == "[unk]") return
 
+            Log.d("JarvisVoiceService", "Vosk standby partial: '$clean'")
             if (containsStandbyWakeWord(clean)) {
                 Log.i("JarvisVoiceService", "Vosk confirmed wake word (partial): '$clean'")
                 try { voskRecognizer?.reset() } catch (_: Exception) {}
@@ -398,20 +411,21 @@ class JarvisVoiceService : Service() {
         }
     }
 
-    private val STANDBY_WAKE_REGEX = Regex("""\b(hey|hi|hello|ok|okay|wake\s+up)?\s*(jarvis|javis|jervis|jarves|jarviz)\b""")
+    private val STANDBY_WAKE_REGEX = Regex("""\b(hey|hi|hello|ok|okay|wake\s+up|where\s+of)?\s*(jarvis|javis|jervis|jarves|jarviz|travis|service|haters|agents|dallas)\b""")
 
     private fun containsStandbyWakeWord(phrase: String): Boolean {
         val clean = phrase.lowercase(Locale.ROOT).trim()
-        if (clean.isEmpty()) return false
+        if (clean.isEmpty() || clean == "[unk]") return false
 
         // Fast regex match for standard combinations and phonetics
         if (STANDBY_WAKE_REGEX.containsMatchIn(clean)) {
             return true
         }
 
-        // Token match for standalone wake tokens
+        // Token match for standalone wake tokens and phonetic matches
         val validWakeTokens = setOf(
-            "jarvis", "javis", "jervis", "jarves", "jarviz", "zarvis", "charvis"
+            "jarvis", "javis", "jervis", "jarves", "jarviz", "zarvis", "charvis",
+            "haters", "agents", "dallas"
         )
         val tokens = clean.split("\\s+".toRegex())
         return tokens.any { validWakeTokens.contains(it) }
