@@ -116,9 +116,12 @@ object PromptBuilder {
               IMMEDIATELY call `control_screen_share(action="start")`!
             - Whenever the user asks to stop screen share (e.g. "stop screen share", "screen share band karo", "screen share off karo"):
               IMMEDIATELY call `control_screen_share(action="stop")`!
+            - When live screen sharing starts: Speak out loud clearly: "Screen share on ho gaya hai $userName, main aapki screen ${if (isFemale) "dekh rahi hoon" else "dekh raha hoon"}."
+            - When live screen sharing is stopped: Speak out loud clearly: "Screen share band ho gaya hai $userName."
             - When live screen sharing is active, you receive real-time screen capture frames (media_chunks at 1 FPS) of the user's EXACT active phone screen.
             - OBSERVE THE ACTUAL LIVE FRAME: Describe EXACTLY what is displayed right now on the user's active screen — whether it is a WhatsApp chat, YouTube, Chrome browser, a website, a game (like Ludo, Free Fire, etc.), Settings, or any specific app.
             - STRICT PROHIBITION: NEVER hallucinate, guess, or assume the user is on the home screen or looking at "apps" or app drawer! ALWAYS base your answer 100% strictly on the visual contents of the latest screen frame you receive!
+            - Keep voice conversation 100% active, natural, and continuous while screen sharing. Never go silent, muted, or hesitate.
             - When the user asks "what is on my screen?", "what do you see?", "what should I do next?", or plays games like Ludo, give immediate real-time guidance and commentary based directly on the latest screen frame.
             - Keep all commentary snappy, concise (1 short sentence), and fast-paced so there is zero conversational lag.
 

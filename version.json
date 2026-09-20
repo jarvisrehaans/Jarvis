@@ -1,8 +1,8 @@
 {
-  "versionCode": 139,
-  "versionName": "1.8.3",
+  "versionCode": 140,
+  "versionName": "1.8.4",
   "apkName": "Jarvis-AI-Release.apk",
   "downloadUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
   "apkUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
-  "changelog": "⚡ What's New & Fixed in v1.8.3:\n\n• 👁️ Real-Time Live Screen Vision Fix: Fixed Gemini Live WebSocket payload to use official media_chunks format. JARVIS now receives real-time mobile screen frames at 1 FPS and accurately sees your active screen.\n\n• 📱 High-Definition 720p Screen Capture: Upgraded screen capture to crisp 720p with 70% JPEG quality and scaled VirtualDisplay DPI, eliminating blurry text and crushed Android layouts.\n\n• 🗣️ Voice-Activated Screen Sharing: Added control_screen_share tool. You can now start or stop screen sharing simply by saying 'Jarvis screen share karo' or 'screen dekho'.\n\n• 🎯 Strict Anti-Hallucination: Enhanced vision instructions to prevent JARVIS from assuming the user is on the home screen or looking at apps when an app or game is open."
+  "changelog": "⚡ What's New & Fixed in v1.8.4:\n\n• 🔊 Live Screen Share Voice Mute Fix: Fixed issue where JARVIS went silent or muted when screen sharing was active. Screen sharing is now unconditionally exempt from background standby, allowing crystal-clear bidirectional voice conversation while browsing any app.\n\n• 🗣️ Spoken Confirmation on Screen Share Start & Stop: JARVIS now immediately announces out loud: 'Screen share on ho gaya hai Sir, main aapki screen dekh rahi hoon' when screen share starts, and confirms when it stops.\n\n• 🔄 Continuous Hands-Free Conversation: Seamless conversation during screen sharing without needing to say 'Hey Jarvis' before every question."
 }

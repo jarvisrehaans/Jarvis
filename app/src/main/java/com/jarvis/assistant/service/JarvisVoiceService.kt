@@ -580,6 +580,7 @@ class JarvisVoiceService : Service() {
         isInFollowUpWindow = false
         idleCountdownJob?.cancel()
         autoSleepJob?.cancel()
+        cancelBackgroundAutoStandby()
 
         exitStandbyListening()
         geminiLive?.setAudioTransportPaused(false)
@@ -645,7 +646,7 @@ class JarvisVoiceService : Service() {
         if (conversationState != ConversationState.ACTIVE) {
             conversationState = ConversationState.ACTIVE
         }
-        if (!isAppInForeground) {
+        if (!isAppInForeground && !isScreenSharing() && screenCaptureEngine == null && cameraVisionEngine?.isCameraStreaming() != true) {
             scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
         }
     }
@@ -665,7 +666,7 @@ class JarvisVoiceService : Service() {
             delay(if (isAppInForeground) FOLLOW_UP_WINDOW_MS else 10_000L)
             isInFollowUpWindow = false
         }
-        if (!isAppInForeground) {
+        if (!isAppInForeground && !isScreenSharing() && screenCaptureEngine == null && cameraVisionEngine?.isCameraStreaming() != true) {
             scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
         }
     }
@@ -673,10 +674,14 @@ class JarvisVoiceService : Service() {
     private var backgroundAutoStandbyJob: Job? = null
 
     private fun scheduleBackgroundAutoStandby(delayMs: Long = BACKGROUND_AUTO_STANDBY_MS) {
-        if (isAppInForeground) return
+        if (isAppInForeground || isScreenSharing() || screenCaptureEngine != null || cameraVisionEngine?.isCameraStreaming() == true) return
         backgroundAutoStandbyJob?.cancel()
         backgroundAutoStandbyJob = toolScope.launch {
             delay(delayMs)
+            if (isScreenSharing() || screenCaptureEngine != null || cameraVisionEngine?.isCameraStreaming() == true) {
+                Log.d("JarvisVoiceService", "Background auto-standby aborted: screen sharing or camera vision is active")
+                return@launch
+            }
             if (!isAppInForeground && conversationState == ConversationState.ACTIVE && !_isStandby.value) {
                 val isSpeaking = audioEngine?.isCurrentlySpeaking() == true
                 if (isSpeaking) {
@@ -766,13 +771,15 @@ class JarvisVoiceService : Service() {
             if (_isStandby.value || conversationState != ConversationState.ACTIVE) {
                 enterActiveState(fromWakeWord = false)
             }
-            // Trigger spoken greeting if cooldown elapsed
-            val now = System.currentTimeMillis()
-            if (now - lastAppOpenGreetingTimeMs > GREETING_COOLDOWN_MS) {
-                if (geminiLive?.isConnected() == true) {
-                    triggerAppOpenGreeting()
-                } else {
-                    pendingAppOpenGreeting = true
+            if (screenCaptureEngine == null && cameraVisionEngine?.isCameraStreaming() != true) {
+                // Trigger spoken greeting if cooldown elapsed
+                val now = System.currentTimeMillis()
+                if (now - lastAppOpenGreetingTimeMs > GREETING_COOLDOWN_MS) {
+                    if (geminiLive?.isConnected() == true) {
+                        triggerAppOpenGreeting()
+                    } else {
+                        pendingAppOpenGreeting = true
+                    }
                 }
             }
         } else {
@@ -790,11 +797,17 @@ class JarvisVoiceService : Service() {
                     updateNotificationState(ServiceNotificationState.STANDBY)
                     scheduleBackgroundAutoStandby(3_000L)
                 }
+            } else {
+                Log.d("JarvisVoiceService", "App backgrounded with screen sharing or camera vision active — keeping session fully awake")
+                cancelBackgroundAutoStandby()
+                updateNotificationState(ServiceNotificationState.LISTENING)
             }
         }
     }
 
     private fun isVoicePlaybackAllowed(): Boolean {
+        // Unconditionally allow playback during live screen sharing or camera vision
+        if (isScreenSharing() || screenCaptureEngine != null || cameraVisionEngine?.isCameraStreaming() == true) return true
         // Allow playback if: (1) not in standby, OR (2) wake-word session is active (JARVIS is responding to user)
         if (isWakeWordActiveSession && conversationState == ConversationState.ACTIVE) return true
         if (isInBackgroundStandby()) return false
@@ -802,8 +815,11 @@ class JarvisVoiceService : Service() {
     }
 
     /** True once background standby is active. Standby takes strict priority. */
-    private fun isInBackgroundStandby(): Boolean =
-        _isStandby.value || conversationState == ConversationState.SLEEPING
+    private fun isInBackgroundStandby(): Boolean {
+        // Never consider background standby active if screen sharing or camera vision is active
+        if (isScreenSharing() || screenCaptureEngine != null || cameraVisionEngine?.isCameraStreaming() == true) return false
+        return _isStandby.value || conversationState == ConversationState.SLEEPING
+    }
 
     private val currentTurnInputText = StringBuilder()
     private val currentTurnOutputText = StringBuilder()
@@ -1355,7 +1371,8 @@ class JarvisVoiceService : Service() {
                         } else if (isBackgroundCommand(fullInput)) {
                             performBackgroundModeIntent()
                         } else {
-                            if (textHasWakeWord(fullInput)) {
+                            val isVisionSession = isScreenSharing() || screenCaptureEngine != null || cameraVisionEngine?.isCameraStreaming() == true
+                            if (textHasWakeWord(fullInput) || isVisionSession) {
                                 currentTurnHasWakeWord = true
                                 if (conversationState == ConversationState.SLEEPING || _isStandby.value) {
                                     enterActiveState(fromWakeWord = true)
@@ -1376,9 +1393,8 @@ class JarvisVoiceService : Service() {
                         currentTurnOutputText.append(text)
                         if (!isVoicePlaybackAllowed()) {
                             val fullInput = currentTurnInputText.toString()
-                            // STRICT: ONLY activate if wake word was actually spoken by the user.
-                            // NEVER activate on ambient speech, singing, or lyrics.
-                            if (textHasWakeWord(fullInput)) {
+                            val isVisionSession = isScreenSharing() || screenCaptureEngine != null || cameraVisionEngine?.isCameraStreaming() == true
+                            if (textHasWakeWord(fullInput) || isVisionSession) {
                                 currentTurnHasWakeWord = true
                                 if (conversationState == ConversationState.SLEEPING) {
                                     enterActiveState(fromWakeWord = true)
@@ -1398,8 +1414,9 @@ class JarvisVoiceService : Service() {
                         resetTurnState()
                     } else {
                         val fullInput = currentTurnInputText.toString()
-                        val hasWakeWord = isVoicePlaybackAllowed() || textHasWakeWord(fullInput)
-                        if (!isVoicePlaybackAllowed() && textHasWakeWord(fullInput)) {
+                        val isVisionSession = isScreenSharing() || screenCaptureEngine != null || cameraVisionEngine?.isCameraStreaming() == true
+                        val hasWakeWord = isVoicePlaybackAllowed() || textHasWakeWord(fullInput) || isVisionSession
+                        if (!isVoicePlaybackAllowed() && (textHasWakeWord(fullInput) || isVisionSession)) {
                             currentTurnHasWakeWord = true
                             if (conversationState == ConversationState.SLEEPING) {
                                 enterActiveState(fromWakeWord = true)
@@ -2786,7 +2803,17 @@ class JarvisVoiceService : Service() {
                 Thread.sleep(150)
             }
 
-            enterActiveState(fromWakeWord = false)
+            // Ensure active session, cancel any background auto-standby, and unmute
+            cancelBackgroundAutoStandby()
+            isUserMuted = false
+            isWakeWordActiveSession = true
+            isInFollowUpWindow = true
+            enterActiveState(fromWakeWord = true)
+            audioEngine?.setMuted(false)
+            audioEngine?.startRecording()
+            audioEngine?.startPlayback()
+            geminiLive?.setAudioTransportPaused(false)
+            audioEngine?.setStreamingPaused(false)
 
             val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             val mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data)
@@ -2805,9 +2832,17 @@ class JarvisVoiceService : Service() {
             screenCaptureEngine?.start()
             dispatchToListeners { it.onScreenShareStateChanged(true) }
 
-            // Gemini Live natural voice notification
+            // Gemini Live natural voice verbal confirmation out loud
+            val prefs = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
+            val userName = prefs.getString("user_name", "Sir")?.ifBlank { "Sir" } ?: "Sir"
+            val isFemale = prefs.getBoolean("is_female_voice", true)
+            val dekteWord = if (isFemale) "dekh rahi hoon" else "dekh raha hoon"
+
             currentTurnHasWakeWord = true
-            geminiLive?.sendText("[SYSTEM EVENT] Live screen sharing has started. You are now receiving continuous mobile screen frames in real time (media_chunks at 1 FPS). Describe EXACTLY what app or content is currently visible on the user's active screen right now. Do NOT claim they are on the home screen or looking at apps if an app or content is open.", turnComplete = true)
+            isTurnInterrupted = false
+            val startPrompt = "Please speak out loud right now in your natural voice. Say: 'Screen share on ho gaya hai $userName, main aapki screen $dekteWord.' Then describe what you see on the active screen in 1 short sentence. Do not call any tools."
+            geminiLive?.sendText(startPrompt, turnComplete = true)
+            Log.i("JarvisVoiceService", "startScreenShare: spoken prompt dispatched to Gemini Live: $startPrompt")
         } catch (e: Throwable) {
             // Catch ALL throwables including SecurityException, IllegalStateException, RuntimeException
             // from MediaProjection failures. Log and gracefully stop instead of crashing the entire app.
@@ -2835,7 +2870,13 @@ class JarvisVoiceService : Service() {
         ensureMicrophoneForegroundService()
         dispatchToListeners { it.onScreenShareStateChanged(false) }
         if (wasActive) {
-            geminiLive?.sendText("[SYSTEM COMMAND] Screen vision has been closed by the user. You are no longer receiving screen frames.")
+            val prefs = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
+            val userName = prefs.getString("user_name", "Sir")?.ifBlank { "Sir" } ?: "Sir"
+            currentTurnHasWakeWord = true
+            isTurnInterrupted = false
+            val stopPrompt = "Please speak out loud right now in your natural voice. Say: 'Screen share band ho gaya hai $userName.' Do not call any tools."
+            geminiLive?.sendText(stopPrompt, turnComplete = true)
+            Log.i("JarvisVoiceService", "stopScreenShare: spoken prompt dispatched to Gemini Live: $stopPrompt")
         }
     }
 
