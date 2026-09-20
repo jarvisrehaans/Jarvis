@@ -317,20 +317,19 @@ class JarvisVoiceService : Service() {
         return synchronized(this) {
             if (voskRecognizer != null) return@synchronized voskRecognizer
             try {
-                // Kaldi dynamic constrained grammar with comprehensive distractor vocabulary.
-                // Including common conversational, television, and phonetic distractor words prevents
-                // Kaldi from forcibly aligning non-wake speech/TV dialogue into wake words.
+                // Kaldi dynamic constrained grammar for strict wake phrases + phonetics + TV distractors.
+                // Including common Indian-English phonetics (jervis, javis) ensures natural human wake spotting,
+                // while TV distractors (service, notice, news, movie) prevent false alignment from television dialogue.
                 val grammar = """[
                     "hey jarvis", "hello jarvis", "hi jarvis", "wake jarvis", "wake up jarvis",
-                    "the", "be", "to", "of", "and", "a", "in", "that", "have", "i", "it", "for", "not", "on", "with", "he", "as", "you", "do", "at",
-                    "this", "but", "his", "by", "from", "they", "we", "say", "her", "she", "or", "an", "will", "my", "one", "all", "would", "there",
-                    "their", "what", "so", "up", "out", "if", "about", "who", "get", "which", "go", "me", "when", "make", "can", "like", "time", "no",
-                    "just", "him", "know", "take", "people", "into", "year", "your", "good", "some", "could", "them", "see", "other", "than", "then",
-                    "now", "look", "only", "come", "its", "over", "think", "also", "back", "after", "use", "two", "how", "our", "work", "first",
-                    "well", "way", "even", "new", "want", "because", "any", "these", "give", "day", "most", "us", "service", "notice", "device",
-                    "devices", "nervous", "news", "video", "music", "movie", "channel", "tv", "phone", "call", "tell", "said", "world", "yes",
-                    "stop", "wait", "please", "okay", "sure", "right", "yeah", "check", "play", "open", "start", "help", "thank", "thanks", "tonight",
-                    "today", "great", "guys", "everyone", "bhai", "hai", "karo", "karna", "kya", "nahi", "aur", "yeh", "woh", "chup", "band", "suno",
+                    "hey javis", "hello javis", "hi javis", "wake javis", "wake up javis",
+                    "hey jervis", "hello jervis", "hi jervis", "wake jervis", "wake up jervis",
+                    "hey jarves", "hello jarves", "hi jarves", "wake jarves", "wake up jarves",
+                    "hey jarviz", "hello jarviz", "hi jarviz", "wake jarviz", "wake up jarviz",
+                    "service", "notice", "device", "devices", "news", "movie", "video", "channel",
+                    "music", "people", "today", "tonight", "great", "guys", "everyone",
+                    "bhai", "karo", "kya", "nahi", "aur", "yeh", "woh", "chup", "band", "suno",
+                    "hello", "hey", "hi", "wake", "up", "yes", "no", "stop", "wait", "please", "okay",
                     "[unk]"
                 ]""".trimIndent()
                 val rec = Recognizer(model, 16000.0f, grammar)
@@ -344,14 +343,12 @@ class JarvisVoiceService : Service() {
         }
     }
 
+    private var consecutivePartialWakeHits = 0
+    private val REQUIRED_PARTIAL_HITS = 2 // 2 consecutive chunks (~80ms) debounces single-frame TV noise flutters
+
     private fun feedStandbyAudioChunk(chunk: ByteArray) {
         if (!_isStandby.value) return
         if (System.currentTimeMillis() - standbyActivatedTime < STANDBY_COOLDOWN_MS) return
-
-        // Energy threshold: quiet background murmurs or distant TV dialogue (< 0.018f RMS)
-        // are discarded immediately, saving CPU and preventing low-volume ambient triggers.
-        val rms = audioEngine?.calculateRms(chunk) ?: 0f
-        if (rms < 0.018f) return
 
         // Maintain rolling pre-roll buffer so words spoken during/immediately after wake word are kept
         while (wakePreRollBuffer.size >= WAKE_PRE_ROLL_MAX_CHUNKS) {
@@ -361,10 +358,11 @@ class JarvisVoiceService : Service() {
 
         val rec = prepareVoskRecognizer() ?: return
         try {
-            // STRICT: Only evaluate completed utterances endpointed by Kaldi.
-            // Partial hypotheses fluctuate 25x/sec on ambient noise and are NEVER allowed to trigger standby wake.
             if (rec.acceptWaveForm(chunk, chunk.size)) {
+                consecutivePartialWakeHits = 0
                 checkVoskHypothesis(rec.result)
+            } else {
+                checkVoskPartialHypothesis(rec.partialResult)
             }
         } catch (e: Exception) {
             Log.e("JarvisVoiceService", "Error in feedStandbyAudioChunk: ${e.message}")
@@ -392,30 +390,60 @@ class JarvisVoiceService : Service() {
         }
     }
 
+    private fun checkVoskPartialHypothesis(partialJson: String?) {
+        if (partialJson.isNullOrBlank() || !_isStandby.value) return
+        if (System.currentTimeMillis() - standbyActivatedTime < STANDBY_COOLDOWN_MS) return
+
+        try {
+            val json = JSONObject(partialJson)
+            val partial = json.optString("partial", "")
+            if (partial.isEmpty() || partial == "[unk]") {
+                consecutivePartialWakeHits = 0
+                return
+            }
+
+            if (containsStandbyWakeWord(partial)) {
+                consecutivePartialWakeHits++
+                Log.d("JarvisVoiceService", "Vosk partial wake hit ($consecutivePartialWakeHits/$REQUIRED_PARTIAL_HITS): '$partial'")
+                if (consecutivePartialWakeHits >= REQUIRED_PARTIAL_HITS) {
+                    consecutivePartialWakeHits = 0
+                    Log.i("JarvisVoiceService", "Vosk confirmed strict wake word (debounced partial): '$partial'")
+                    try { voskRecognizer?.reset() } catch (_: Exception) {}
+                    onWakeWordDetected()
+                }
+            } else {
+                consecutivePartialWakeHits = 0
+            }
+        } catch (e: Exception) {
+            Log.e("JarvisVoiceService", "Error in checkVoskPartialHypothesis: ${e.message}")
+        }
+    }
+
     // STRICT: Only "hey jarvis", "hello jarvis", "hi jarvis", "wake jarvis", "wake up jarvis".
-    // Must start with the wake phrase. Loose phonetics ("javis", "jervis", "jarves") are excluded.
+    // Standalone single words ("jarvis", "hey", "hi", "hello", "wake") NEVER match.
     private val STANDBY_WAKE_REGEX = Regex(
-        """^(hey|hello|hi|wake\s+up|wake)\s+jarvis(\b.*)?$""",
+        """\b(hey|hello|hi|wake\s+up|wake)\s+(jarvis|javis|jervis|jarves|jarviz)\b""",
         RegexOption.IGNORE_CASE
     )
     private val HINDI_STANDBY_WAKE_REGEX = Regex(
-        """^(हे|हेलो|हाय|जागो|वेक\s+अप)\s+जार्विस(\b.*)?$""",
+        """\b(हे|हेलो|हाय|जागो|वेक\s+अप)\s+जार्विस\b""",
         RegexOption.IGNORE_CASE
     )
 
     private fun containsStandbyWakeWord(phrase: String): Boolean {
-        val clean = phrase.lowercase(Locale.ROOT).trim()
-        if (clean.isEmpty() || clean == "[unk]") return false
-        return STANDBY_WAKE_REGEX.matches(clean) ||
-                HINDI_STANDBY_WAKE_REGEX.matches(clean) ||
-                clean == "hey jarvis" || clean == "hello jarvis" || clean == "hi jarvis" ||
-                clean == "wake jarvis" || clean == "wake up jarvis" ||
-                clean == "हे जार्विस" || clean == "हेलो जार्विस" || clean == "हाय जार्विस" ||
-                clean == "जागो जार्विस" || clean == "वेक अप जार्विस"
+        val clean = phrase.lowercase(Locale.ROOT)
+            .replace("[unk]", " ")
+            .replace(Regex("[^a-zA-Z\\s\\u0900-\\u097F]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        if (clean.isEmpty()) return false
+        return STANDBY_WAKE_REGEX.containsMatchIn(clean) ||
+                HINDI_STANDBY_WAKE_REGEX.containsMatchIn(clean)
     }
 
     private fun exitStandbyListening() {
         _isStandby.value = false
+        consecutivePartialWakeHits = 0
         try {
             voskRecognizer?.reset()
         } catch (_: Exception) {}

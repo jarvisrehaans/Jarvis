@@ -1,8 +1,8 @@
 {
-  "versionCode": 135,
-  "versionName": "1.7.9",
+  "versionCode": 136,
+  "versionName": "1.8.0",
   "apkName": "Jarvis-AI-Release.apk",
   "downloadUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
   "apkUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
-  "changelog": "⚡ What's New & Fixed in v1.7.9:\n\n• 🛡️ Complete Immunity to TV & Ambient Audio: Standby wake listening now requires finalized Viterbi endpointing and RMS energy gating (>= 0.018f), completely ignoring quiet background TV murmurs and partial fluctuations.\n\n• 🎯 Strict 5 Wake-Words Only: Absolutely zero loose phonetic matching ('javis', 'jervis', etc. removed). Added broad common-word distractor vocabulary to Vosk so TV speech is recognized as ordinary words rather than falsely forced into wake phrases.\n\n• 🔒 Background Voice Playback Guard: JARVIS is strictly prevented from playing speech aloud in the background unless the turn contains an explicit verified wake word or is within an active 10s command window.\n\n• ⏱️ Tight 12s Background Timeout: Standby mode returns automatically after 12s of inactivity without being perpetually extended by background TV noise."
+  "changelog": "⚡ What's New & Fixed in v1.8.0:\n\n• ⚡ Instant & Reliable Wake Spotting: Restored acoustic phonetics (jervis, javis) for natural Indian-English voice recognition. Removed blocking RMS energy filter so normal speaking voice is detected immediately without delay.\n\n• 🛡️ Anti-Flutter TV Noise Debouncer: Partial hypothesis requires 2 consecutive matching chunks (~80ms), completely blocking transient 1-frame noise flutters from TV commercials or ambient chatter.\n\n• 🔒 Background Voice Guard: Unprovoked greetings in the background are disabled, and voice playback remains strictly muted in the background unless the turn has a confirmed wake word."
 }
