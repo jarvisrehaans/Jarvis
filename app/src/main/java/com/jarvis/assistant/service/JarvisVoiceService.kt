@@ -599,6 +599,10 @@ class JarvisVoiceService : Service() {
      * During this window, Jarvis continues listening and responds naturally without requiring wake word.
      */
     private fun startFollowUpWindow() {
+        if (_isStandby.value || conversationState != ConversationState.ACTIVE) {
+            isInFollowUpWindow = false
+            return
+        }
         isInFollowUpWindow = true
         activeFollowUpJob?.cancel()
         activeFollowUpJob = toolScope.launch {
@@ -623,7 +627,7 @@ class JarvisVoiceService : Service() {
                 val isRecentTurn = isInFollowUpWindow
                 val isSpeaking = audioEngine?.isCurrentlySpeaking() == true
                 if (isRecentUserSpeech || isRecentTurn || isSpeaking) {
-                    scheduleBackgroundAutoStandby(30_000L)
+                    scheduleBackgroundAutoStandby(15_000L)
                     return@launch
                 }
                 Log.d("JarvisVoiceService", "Background silence timeout (${delayMs}ms) elapsed -> returning to standby")
@@ -702,20 +706,25 @@ class JarvisVoiceService : Service() {
         } else {
             updateNotificationState(ServiceNotificationState.STANDBY)
             if (screenCaptureEngine == null && cameraVisionEngine?.isCameraStreaming() != true) {
-                scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
+                // When app moves to background, enter standby promptly so room conversations aren't overheard
+                val isSpeaking = audioEngine?.isCurrentlySpeaking() == true
+                if (!isSpeaking) {
+                    enterStandby(sayGoodbye = false, playSound = false)
+                } else {
+                    scheduleBackgroundAutoStandby(5000L) // Wait for current speaking to finish
+                }
             }
         }
     }
 
     private fun isVoicePlaybackAllowed(): Boolean {
-        if (isInFollowUpWindow) return true
         if (isInBackgroundStandby()) return false
         return true
     }
 
-    /** True once background standby is active. */
+    /** True once background standby is active. Standby takes strict priority. */
     private fun isInBackgroundStandby(): Boolean =
-        !isInFollowUpWindow && (_isStandby.value || conversationState == ConversationState.SLEEPING)
+        _isStandby.value || conversationState == ConversationState.SLEEPING
 
     private val currentTurnInputText = StringBuilder()
     private val currentTurnOutputText = StringBuilder()
@@ -781,9 +790,9 @@ class JarvisVoiceService : Service() {
     private fun isBackgroundCommand(text: String): Boolean {
         val normalized = text.lowercase().replace(Regex("[^a-zA-Z0-9\\u0900-\\u097F\\s]"), " ").trim()
         if (normalized.isEmpty()) return false
-        if (normalized == "go" || normalized == "jarvis go" || normalized == "just go" || normalized == "go away" || normalized == "sleep" || normalized == "bye" || normalized == "goodbye") return true
+        if (normalized == "go" || normalized == "jarvis go" || normalized == "just go" || normalized == "go away" || normalized == "sleep" || normalized == "bye" || normalized == "goodbye" || normalized == "back" || normalized == "background") return true
         if (BACKGROUND_PHRASES.any { normalized.contains(it) }) return true
-        val bgRegex = Regex("""\b(go|send|run|move)\s+(in|into|to)?\s*(the)?\s*background\b""")
+        val bgRegex = Regex("""\b(go|good|send|run|move|switch)\s+(to\s+)?(the\s+)?back(ground|one)?\b""")
         return bgRegex.containsMatchIn(normalized)
     }
 
@@ -921,11 +930,29 @@ class JarvisVoiceService : Service() {
     fun performBackgroundModeIntent() {
         Log.d("JarvisVoiceService", "Executing BackgroundModeIntent — transitioning JARVIS to background standby mode...")
 
-        // Unblock any external speaking flag so mic streams freely
+        // 1. Cancel follow-up window immediately so it doesn't listen to room speech
+        isInFollowUpWindow = false
+        activeFollowUpJob?.cancel()
+
+        // 2. Unblock any external speaking flag
         audioEngine?.setExternalSpeaking(false)
 
-        // Enter standby mode (plays sleek descending sci-fi chime & starts offline wake word listening)
-        // Does NOT close any open apps or navigate away from the user's current screen.
+        // 3. Stop playback immediately
+        audioEngine?.stopPlayback()
+        audioEngine?.clearPlaybackQueue()
+
+        // 4. Send app to home screen (minimize)
+        try {
+            val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_HOME)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            startActivity(homeIntent)
+        } catch (e: Exception) {
+            Log.w("JarvisVoiceService", "Error navigating to home screen: ${e.message}")
+        }
+
+        // 5. Enter standby mode (plays sleek descending sci-fi chime & starts offline wake word listening)
         enterStandby(sayGoodbye = false, playSound = true)
     }
 
@@ -1135,11 +1162,16 @@ class JarvisVoiceService : Service() {
                 }
                 onSpeakingStopped = {
                     audioEngine?.setStreamingPaused(false)
-                    geminiLive?.setAudioTransportPaused(false)
-                    if (!_isStandby.value) {
+                    if (!_isStandby.value && conversationState == ConversationState.ACTIVE) {
+                        geminiLive?.setAudioTransportPaused(false)
                         updateNotificationState(ServiceNotificationState.IDLE)
+                        startFollowUpWindow()
+                    } else {
+                        // Standby / Sleeping: keep Gemini transport suspended and cancel follow-up window
+                        geminiLive?.setAudioTransportPaused(true)
+                        isInFollowUpWindow = false
+                        activeFollowUpJob?.cancel()
                     }
-                    startFollowUpWindow()
                     dispatchToListeners { it.onSpeakingStopped() }
                 }
                 onInterruptTriggered = { interrupt() }
