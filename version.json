@@ -1,8 +1,8 @@
 {
-  "versionCode": 140,
-  "versionName": "1.8.4",
+  "versionCode": 141,
+  "versionName": "1.8.5",
   "apkName": "Jarvis-AI-Release.apk",
   "downloadUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
   "apkUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
-  "changelog": "⚡ What's New & Fixed in v1.8.4:\n\n• 🔊 Live Screen Share Voice Mute Fix: Fixed issue where JARVIS went silent or muted when screen sharing was active. Screen sharing is now unconditionally exempt from background standby, allowing crystal-clear bidirectional voice conversation while browsing any app.\n\n• 🗣️ Spoken Confirmation on Screen Share Start & Stop: JARVIS now immediately announces out loud: 'Screen share on ho gaya hai Sir, main aapki screen dekh rahi hoon' when screen share starts, and confirms when it stops.\n\n• 🔄 Continuous Hands-Free Conversation: Seamless conversation during screen sharing without needing to say 'Hey Jarvis' before every question."
+  "changelog": "⚡ What's New & Fixed in v1.8.5:\n\n• 🎬 Gemini 3.1+ Live API Video Schema Fix: Fixed critical error (code 1007) by replacing deprecated media_chunks with official realtime_input.video schema, restoring seamless bidirectional voice during screen share.\n\n• 📱 Android 14+ Entire Screen Capture: Configured MediaProjectionConfig.createConfigForDefaultDisplay() so Jarvis sees the full mobile screen across all apps (Instagram, YouTube, etc.) instead of locking to single app.\n\n• 🚀 Persistent App State: Prevented auto-minimizing on screen share start so the app remains open and responsive.\n\n• ⚡ Zero-Starvation 1 FPS Capture Engine: Expanded ImageReader buffer to 4 with throttled 2 FPS frame extraction for zero latency and zero GPU starvation."
 }

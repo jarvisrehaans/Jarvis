@@ -140,11 +140,8 @@ class MainActivity : AppCompatActivity() {
     ) { result ->
         if (result.resultCode == RESULT_OK && result.data != null) {
             voiceService?.startScreenShare(result.resultCode, result.data!!)
-            Toast.makeText(this, "Vision Screen Share Started", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Vision Screen Share Started. You can now switch to any app.", Toast.LENGTH_LONG).show()
             updateVisionVisuals(true)
-            if (intent?.action == ACTION_REQUEST_SCREEN_SHARE) {
-                moveTaskToBack(true)
-            }
         } else {
             voiceService?.ensureMicrophoneForegroundService()
             Toast.makeText(this, "Screen Share permission canceled", Toast.LENGTH_SHORT).show()
@@ -537,6 +534,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun launchScreenCapture() {
+        try {
+            val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+            val captureIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                val config = android.media.projection.MediaProjectionConfig.createConfigForDefaultDisplay()
+                mediaProjectionManager.createScreenCaptureIntent(config)
+            } else {
+                mediaProjectionManager.createScreenCaptureIntent()
+            }
+            screenCaptureLauncher.launch(captureIntent)
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Error launching screen capture: ${e.message}", e)
+            Toast.makeText(this, "Could not launch screen share: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun handleSpecialIntent(intent: Intent?) {
         if (intent?.action == ACTION_REQUEST_SCREEN_SHARE) {
             val service = voiceService
@@ -544,8 +557,7 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Screen Share is already active", Toast.LENGTH_SHORT).show()
                 return
             }
-            val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
-            screenCaptureLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
+            launchScreenCapture()
         }
     }
 
@@ -601,19 +613,30 @@ class MainActivity : AppCompatActivity() {
 
         if (hasKey) {
             val sessionRunning = voiceService?.isSessionRunning() == true
-            val serviceVoiceMismatch = voiceService != null && voiceService?.getCurrentVoice() != currentVoice
-            val settingsChanged = currentKey != activeApiKey ||
-                    currentUserName != activeUserName ||
-                    currentVoice != activeVoice ||
-                    currentPersonality != activePersonality ||
-                    currentModel != activeModelString ||
+            val isScreenSharing = voiceService?.isScreenSharing() == true
+
+            // If session is already running, sync active tracking variables so we don't falsely trigger restart!
+            if (sessionRunning && activeApiKey.isBlank()) {
+                activeApiKey = currentKey
+                activeUserName = currentUserName
+                activeVoice = voiceService?.getCurrentVoice()?.ifBlank { currentVoice } ?: currentVoice
+                activePersonality = currentPersonality
+                activeModelString = currentModel
+            }
+
+            val serviceVoiceMismatch = voiceService != null && voiceService?.getCurrentVoice() != currentVoice && voiceService?.getCurrentVoice()?.isNotBlank() == true
+            val settingsChanged = (currentKey != activeApiKey && activeApiKey.isNotBlank()) ||
+                    (currentUserName != activeUserName && activeUserName.isNotBlank()) ||
+                    (currentVoice != activeVoice && activeVoice.isNotBlank()) ||
+                    (currentPersonality != activePersonality && activePersonality.isNotBlank()) ||
+                    (currentModel != activeModelString && activeModelString.isNotBlank()) ||
                     serviceVoiceMismatch
 
-            if (!sessionRunning || settingsChanged || isShutDown) {
+            if (!sessionRunning || (settingsChanged && !isScreenSharing) || isShutDown) {
                 isShutDown = false
                 isMuted = false
                 if (isBound && voiceService != null) {
-                    startVoiceSession(forceRestart = true)
+                    startVoiceSession(forceRestart = !sessionRunning || isShutDown)
                 } else {
                     startAndBindVoiceService()
                 }
@@ -931,8 +954,7 @@ class MainActivity : AppCompatActivity() {
             service.stopScreenShare()
             Toast.makeText(this, "Vision Screen Share Stopped", Toast.LENGTH_SHORT).show()
         } else {
-            val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
-            screenCaptureLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
+            launchScreenCapture()
         }
     }
 

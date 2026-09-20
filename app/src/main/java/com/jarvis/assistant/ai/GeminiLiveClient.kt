@@ -52,8 +52,10 @@ class GeminiLiveClient(
     private var webSocket: WebSocket? = null
     private var isManuallyClosed = false
     @Volatile private var isRenewingSession = false
+    @Volatile var isSetupComplete = false
+        private set
     private var consecutiveSendFailures = 0
-    private var isSetupComplete = false
+    private val pendingTextQueue = java.util.concurrent.ConcurrentLinkedQueue<Pair<String, Boolean>>()
     private var reconnectAttempt = 0
     @Volatile private var lastAudioSentTimeMs = 0L
     /** Keeps the WebSocket warm during local wake-word standby without sending PCM. */
@@ -1227,16 +1229,14 @@ class GeminiLiveClient(
 
     /** Send a live vision screen capture frame (JPEG image) to Gemini Live. */
     fun sendVideoFrame(jpegBytes: ByteArray) {
-        if (!isSetupComplete) return
+        if (!isSetupComplete || isManuallyClosed) return
         try {
             val b64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
             val msg = JSONObject().apply {
                 put("realtime_input", JSONObject().apply {
-                    put("media_chunks", JSONArray().apply {
-                        put(JSONObject().apply {
-                            put("mime_type", "image/jpeg")
-                            put("data", b64)
-                        })
+                    put("video", JSONObject().apply {
+                        put("mime_type", "image/jpeg")
+                        put("data", b64)
                     })
                 })
             }
@@ -1251,6 +1251,14 @@ class GeminiLiveClient(
 
     /** Send a free-form text turn to JARVIS (e.g. text chat, phone-action confirmations). */
     fun sendText(text: String, turnComplete: Boolean = true) {
+        if (!isSetupComplete || webSocket == null) {
+            Log.i(TAG, "sendText: socket not ready yet (isSetupComplete=$isSetupComplete). Queuing text: '$text'")
+            pendingTextQueue.offer(Pair(text, turnComplete))
+            if (webSocket == null && !isManuallyClosed) {
+                connect()
+            }
+            return
+        }
         try {
             Log.i(TAG, "sendText invoked: '$text' (connected=${isConnected()})")
             val msg = JSONObject().apply {
@@ -1320,6 +1328,12 @@ class GeminiLiveClient(
                 startSessionRenewalTimer()
                 startIdleSessionMonitor()
                 onSetupComplete?.invoke()
+
+                while (!pendingTextQueue.isEmpty()) {
+                    val (queuedText, queuedTurnComplete) = pendingTextQueue.poll() ?: break
+                    Log.i(TAG, "Flushing queued text turn after setupComplete: '$queuedText'")
+                    sendText(queuedText, queuedTurnComplete)
+                }
                 return
             }
 
