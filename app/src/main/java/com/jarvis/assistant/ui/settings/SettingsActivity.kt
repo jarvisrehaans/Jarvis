@@ -283,8 +283,9 @@ class SettingsActivity : AppCompatActivity() {
         val p = prefs()
         userNameInput.setText(p.getString("user_name", ""))
 
-        val savedVoice = p.getString("gemini_voice", "Puck")
-        selectedVoiceIndex = voiceValues.indexOf(savedVoice).coerceAtLeast(0)
+        val savedVoice = p.getString("gemini_voice", "Aoede") ?: "Aoede"
+        val effectiveVoice = if (savedVoice.equals("Puck", ignoreCase = true)) "Aoede" else savedVoice
+        selectedVoiceIndex = voiceValues.indexOf(effectiveVoice).coerceAtLeast(0)
 
         val savedModel = p.getString("gemini_model", geminiModelValues[0]) ?: geminiModelValues[0]
         selectedModelIndex = geminiModelValues.indexOf(savedModel).coerceAtLeast(0)
@@ -468,7 +469,7 @@ class SettingsActivity : AppCompatActivity() {
         val homeStyleValue = if (selectedHomeStyleIndex == 1) "cyber_hud" else "classic"
         val previousTheme = ThemeManager.getTheme(this)
 
-        val selectedVoice = voiceValues.getOrNull(selectedVoiceIndex) ?: "Puck"
+        val selectedVoice = voiceValues.getOrNull(selectedVoiceIndex) ?: "Aoede"
         prefs().edit().apply {
             putString("api_key", apiKeyInput.text.toString().trim())
             putString("user_name", newUserName)

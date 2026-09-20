@@ -3,6 +3,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.media.*
 import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 import kotlinx.coroutines.*
@@ -63,6 +64,7 @@ class AudioEngine(private val context: Context) {
     private var audioTrack: AudioTrack? = null
     private var aec: AcousticEchoCanceler? = null
     private var ns: NoiseSuppressor? = null
+    private var agc: AutomaticGainControl? = null
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
 
     private var isRecording = false
@@ -273,6 +275,14 @@ class AudioEngine(private val context: Context) {
                     Log.e(TAG, "Failed to enable NoiseSuppressor: ${e.message}")
                 }
             }
+            if (AutomaticGainControl.isAvailable()) {
+                try {
+                    agc = AutomaticGainControl.create(sessionId)?.apply { enabled = true }
+                    Log.d(TAG, "AutomaticGainControl enabled on mic session $sessionId")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to enable AutomaticGainControl: ${e.message}")
+                }
+            }
         }
 
         return record
@@ -286,9 +296,11 @@ class AudioEngine(private val context: Context) {
         try {
             aec?.release()
             ns?.release()
+            agc?.release()
         } catch (_: Exception) {}
         aec = null
         ns = null
+        agc = null
 
         try {
             audioRecord?.stop()
@@ -305,12 +317,13 @@ class AudioEngine(private val context: Context) {
         }
     }
 
-    /**
-     * Re-initializes AudioRecord when waking up from long background standby.
-     * Clears any hardware buffer drift or audio clock stalls caused by background media (YouTube/Reels).
-     */
     fun refreshAudioRecordOnWake() {
-        Log.i(TAG, "refreshAudioRecordOnWake: Re-initializing AudioRecord after background standby transition...")
+        if (isRecording && recordJob?.isActive == true && audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+            Log.d(TAG, "refreshAudioRecordOnWake: AudioRecord is already actively recording and healthy, preserving continuous session.")
+            routeToSpeaker()
+            return
+        }
+        Log.i(TAG, "refreshAudioRecordOnWake: AudioRecord not active or stalled. Re-initializing AudioRecord...")
         restartAudioRecordInternal()
     }
 
@@ -456,11 +469,13 @@ class AudioEngine(private val context: Context) {
         try {
             aec?.release()
             ns?.release()
+            agc?.release()
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing audiofx: ${e.message}")
         }
         aec = null
         ns = null
+        agc = null
 
         audioRecord?.let {
             try {

@@ -6,7 +6,7 @@ import java.util.Locale
 
 object PromptBuilder {
 
-    fun buildSystemPrompt(userName: String, personality: String, isFemale: Boolean, voiceName: String = "Puck"): String {
+    fun buildSystemPrompt(userName: String, personality: String, isFemale: Boolean, voiceName: String = "Aoede"): String {
         val now = SimpleDateFormat("EEEE, dd MMMM yyyy, HH:mm", Locale.getDefault()).format(Date())
 
         val genderInstruction = if (isFemale) {

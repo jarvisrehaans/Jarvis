@@ -167,7 +167,8 @@ class MainActivity : AppCompatActivity() {
             voiceService?.setAppForeground(true)
             voiceService?.ensureMicrophoneForegroundService()
 
-            val currentVoice = prefs().getString("gemini_voice", "Puck") ?: "Puck"
+            var currentVoice = prefs().getString("gemini_voice", "Aoede") ?: "Aoede"
+            if (currentVoice.equals("Puck", ignoreCase = true)) currentVoice = "Aoede"
             if (voiceService?.isSessionRunning() == true) {
                 // Rejoining an already-running session (e.g. returned from YouTube)
                 if (voiceService?.getCurrentVoice() != currentVoice) {
@@ -573,7 +574,8 @@ class MainActivity : AppCompatActivity() {
         var currentKey = EnvLoader.getApiKey(this)
         if (currentKey.isBlank()) currentKey = prefs().getString("api_key", "") ?: ""
         val currentUserName = prefs().getString("user_name", "Sir") ?: "Sir"
-        val currentVoice = prefs().getString("gemini_voice", "Puck") ?: "Puck"
+        var currentVoice = prefs().getString("gemini_voice", "Aoede") ?: "Aoede"
+        if (currentVoice.equals("Puck", ignoreCase = true)) currentVoice = "Aoede"
         val currentPersonality = prefs().getString("personality_mode", "jarvis") ?: "jarvis"
         val currentModel = prefs().getString("gemini_model", "models/gemini-3.1-flash-live-preview")
             ?: "models/gemini-3.1-flash-live-preview"
@@ -1094,7 +1096,8 @@ class MainActivity : AppCompatActivity() {
         val userName = prefs().getString("user_name", "Sir") ?: "Sir"
         val modelString = prefs().getString("gemini_model", "models/gemini-3.1-flash-live-preview")
             ?: "models/gemini-3.1-flash-live-preview"
-        val voiceName = prefs().getString("gemini_voice", "Puck") ?: "Puck"
+        var voiceName = prefs().getString("gemini_voice", "Aoede") ?: "Aoede"
+        if (voiceName.equals("Puck", ignoreCase = true)) voiceName = "Aoede"
         val personality = prefs().getString("personality_mode", "jarvis") ?: "jarvis"
 
         activePersonality = personality
@@ -1115,7 +1118,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun buildSystemPrompt(userName: String, personality: String, isFemale: Boolean, voiceName: String = "Puck"): String {
+    private fun buildSystemPrompt(userName: String, personality: String, isFemale: Boolean, voiceName: String = "Aoede"): String {
         return com.jarvis.assistant.util.PromptBuilder.buildSystemPrompt(userName, personality, isFemale, voiceName)
     }
 

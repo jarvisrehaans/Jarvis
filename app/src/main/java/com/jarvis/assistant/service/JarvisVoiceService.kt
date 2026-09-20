@@ -159,8 +159,8 @@ class JarvisVoiceService : Service() {
         }
     }
 
-    private var currentVoiceName: String = "Puck"
-    private var isVoiceFemale: Boolean = false
+    private var currentVoiceName: String = "Aoede"
+    private var isVoiceFemale: Boolean = true
 
     fun setVoiceConfig(voiceName: String) {
         currentVoiceName = voiceName
@@ -234,13 +234,19 @@ class JarvisVoiceService : Service() {
     private val _isStandby = MutableStateFlow(false)
     val isStandby: StateFlow<Boolean> = _isStandby.asStateFlow()
 
+    // Rolling audio buffer to capture user speech during/immediately after wake word (~2.0 seconds)
+    private val wakePreRollBuffer = java.util.concurrent.ConcurrentLinkedQueue<ByteArray>()
+    private val WAKE_PRE_ROLL_MAX_CHUNKS = 50 // 50 * 40ms = 2.0s
+    private var smartGreetingJob: Job? = null
+    @Volatile private var userContinuedSpeakingAfterWake = false
+
     fun enterSleepingState(sayGoodbye: Boolean = false) {
         enterStandby(sayGoodbye = sayGoodbye, playSound = false)
     }
 
     /**
      * Transition to background standby mode.
-     * JARVIS plays descending harmonic sci-fi chime, disconnects continuous Gemini Live,
+     * JARVIS plays descending harmonic sci-fi chime, pauses Gemini Live audio transport (hot standby),
      * keeps hardware AudioRecord active to prevent Android microphone privacy indicator blinking,
      * and streams chunks to the local offline Vosk Recognizer in memory.
      * ZERO tokens and ZERO network consumed while in background.
@@ -262,6 +268,8 @@ class JarvisVoiceService : Service() {
         _isStandby.value = true
         currentTurnHasWakeWord = false
         isInFollowUpWindow = false
+        userContinuedSpeakingAfterWake = false
+        smartGreetingJob?.cancel()
 
         // 1. Sleek descending futuristic standby sound effect if requested
         if (playSound) {
@@ -274,17 +282,18 @@ class JarvisVoiceService : Service() {
         audioEngine?.startRecording() // Guarantees hardware mic remains continuously active without cycling
         standbyAudioBuffer.clear()
         preConnectionAudioBuffer.clear()
+        synchronized(wakePreRollBuffer) { wakePreRollBuffer.clear() }
         resetTurnState()
         try {
             voskRecognizer?.reset()
         } catch (_: Exception) {}
 
-        // 3. Disconnect Gemini Live completely & clear session handle so old turns don't replay on wake
+        // 3. Hot standby: Suspend microphone traffic to Gemini Live without tearing down WebSocket session.
+        // This ensures 0 tokens used in background while allowing instant 0ms resumption upon wake word!
         try {
-            geminiLive?.clearSessionHandle()
-            geminiLive?.disconnect(manual = true)
+            geminiLive?.setAudioTransportPaused(true)
         } catch (e: Exception) {
-            Log.w("JarvisVoiceService", "Error disconnecting geminiLive: ${e.message}")
+            Log.w("JarvisVoiceService", "Error pausing geminiLive audio transport: ${e.message}")
         }
 
         // 4. Finish standby bookkeeping
@@ -310,10 +319,12 @@ class JarvisVoiceService : Service() {
         return synchronized(this) {
             if (voskRecognizer != null) return@synchronized voskRecognizer
             try {
-                val grammar = "[\"hey jarvis\", \"hello jarvis\", \"hi jarvis\", \"ok jarvis\", \"okay jarvis\", \"wake up jarvis\", \"jarvis\", \"hello\", \"hey\", \"hi\", \"ok\", \"okay\", \"yes\", \"no\", \"stop\", \"wait\", \"[unk]\"]"
-                val rec = Recognizer(model, 16000.0f, grammar)
+                // Initialize full acoustic recognizer without artificial grammar restrictions.
+                // This decodes natural conversational English accurately and prevents ambient noise
+                // from being forced into a false positive wake word path.
+                val rec = Recognizer(model, 16000.0f)
                 voskRecognizer = rec
-                Log.i("JarvisVoiceService", "Direct Vosk continuous Recognizer initialized successfully with wake + non-wake vocabulary")
+                Log.i("JarvisVoiceService", "Direct Vosk continuous Recognizer initialized with full acoustic vocabulary")
                 rec
             } catch (e: Exception) {
                 Log.e("JarvisVoiceService", "Failed to create Vosk Recognizer: ${e.message}", e)
@@ -326,15 +337,21 @@ class JarvisVoiceService : Service() {
         if (!_isStandby.value) return
         if (System.currentTimeMillis() - standbyActivatedTime < STANDBY_COOLDOWN_MS) return
 
+        // Maintain rolling pre-roll buffer so words spoken during or immediately after the wake word are never dropped
+        while (wakePreRollBuffer.size >= WAKE_PRE_ROLL_MAX_CHUNKS) {
+            wakePreRollBuffer.poll()
+        }
+        wakePreRollBuffer.offer(chunk)
+
         val rec = prepareVoskRecognizer() ?: return
         try {
             if (rec.acceptWaveForm(chunk, chunk.size)) {
                 checkVoskHypothesis(rec.result)
+            } else {
+                // Check partial hypothesis so detection is instant even in normal ambient noise
+                // where background audio (fan, TV, room noise) prevents silence endpointing.
+                checkVoskPartialHypothesis(rec.partialResult)
             }
-            // CRITICAL: NEVER check rec.partialResult!
-            // In Kaldi, partial results are unstable, intermediate guesses that force
-            // unpruned partial frames to match grammar phrases (e.g. "hello" -> "hello jarvis"),
-            // causing immediate false wakeups while the user is simply saying "hello".
         } catch (e: Exception) {
             Log.e("JarvisVoiceService", "Error in feedStandbyAudioChunk: ${e.message}")
         }
@@ -352,7 +369,7 @@ class JarvisVoiceService : Service() {
 
             Log.i("JarvisVoiceService", "Vosk standby final hypothesis: '$clean'")
             if (containsStandbyWakeWord(clean)) {
-                Log.i("JarvisVoiceService", "Vosk confirmed wake word: '$clean'")
+                Log.i("JarvisVoiceService", "Vosk confirmed wake word (final): '$clean'")
                 try { voskRecognizer?.reset() } catch (_: Exception) {}
                 onWakeWordDetected()
             }
@@ -361,22 +378,43 @@ class JarvisVoiceService : Service() {
         }
     }
 
+    private fun checkVoskPartialHypothesis(partialJson: String?) {
+        if (partialJson.isNullOrBlank() || !_isStandby.value) return
+        if (System.currentTimeMillis() - standbyActivatedTime < STANDBY_COOLDOWN_MS) return
+
+        try {
+            val json = JSONObject(partialJson)
+            val partial = json.optString("partial", "")
+            val clean = partial.trim().lowercase(Locale.ROOT)
+            if (clean.isEmpty() || clean == "[unk]") return
+
+            if (containsStandbyWakeWord(clean)) {
+                Log.i("JarvisVoiceService", "Vosk confirmed wake word (partial): '$clean'")
+                try { voskRecognizer?.reset() } catch (_: Exception) {}
+                onWakeWordDetected()
+            }
+        } catch (e: Exception) {
+            Log.e("JarvisVoiceService", "Error in checkVoskPartialHypothesis: ${e.message}")
+        }
+    }
+
+    private val STANDBY_WAKE_REGEX = Regex("""\b(hey|hi|hello|ok|okay|wake\s+up)?\s*(jarvis|javis|jervis|jarves|jarviz)\b""")
+
     private fun containsStandbyWakeWord(phrase: String): Boolean {
         val clean = phrase.lowercase(Locale.ROOT).trim()
-        if (!clean.contains("jarvis")) return false
+        if (clean.isEmpty()) return false
 
-        val validWakePhrases = setOf(
-            "hey jarvis",
-            "hello jarvis",
-            "hi jarvis",
-            "ok jarvis",
-            "okay jarvis",
-            "wake up jarvis",
-            "jarvis"
-        )
-        return validWakePhrases.any { wake ->
-            clean == wake || clean.startsWith("$wake ") || clean.endsWith(" $wake") || clean.contains(" $wake ")
+        // Fast regex match for standard combinations and phonetics
+        if (STANDBY_WAKE_REGEX.containsMatchIn(clean)) {
+            return true
         }
+
+        // Token match for standalone wake tokens
+        val validWakeTokens = setOf(
+            "jarvis", "javis", "jervis", "jarves", "jarviz", "zarvis", "charvis"
+        )
+        val tokens = clean.split("\\s+".toRegex())
+        return tokens.any { validWakeTokens.contains(it) }
     }
 
     private fun exitStandbyListening() {
@@ -388,7 +426,7 @@ class JarvisVoiceService : Service() {
 
     private fun onWakeWordDetected() {
         if (!_isStandby.value && conversationState == ConversationState.ACTIVE) return
-        Log.i("JarvisVoiceService", "WAKE WORD DETECTED! Playing wake sound and reconnecting...")
+        Log.i("JarvisVoiceService", "WAKE WORD DETECTED! Playing wake sound and activating Live session...")
 
         // 1. Brief haptic feedback
         vibrateBriefly()
@@ -402,18 +440,58 @@ class JarvisVoiceService : Service() {
         // 4. Reset turn state
         resetTurnState()
         currentTurnHasWakeWord = true
+        userContinuedSpeakingAfterWake = false
 
-        // 5. Reconnect Gemini Live & enter ACTIVE conversation
+        // 5. Reconnect/Unpause Gemini Live & enter ACTIVE conversation
         enterActiveState(fromWakeWord = true)
         updateNotificationState(ServiceNotificationState.LISTENING)
 
-        // 6. If woke up in background, schedule auto-standby window to listen for user command
+        // 6. Immediately flush pre-roll audio so Gemini hears commands spoken right with the wake word
+        val preRollChunks = mutableListOf<ByteArray>()
+        while (!wakePreRollBuffer.isEmpty()) {
+            val chunk = wakePreRollBuffer.poll() ?: break
+            preRollChunks.add(chunk)
+        }
+        if (preRollChunks.isNotEmpty()) {
+            toolScope.launch {
+                for (chunk in preRollChunks) {
+                    if (geminiLive?.isConnected() == true) {
+                        geminiLive?.sendAudioChunk(chunk)
+                    } else {
+                        while (preConnectionAudioBuffer.size >= 60) {
+                            preConnectionAudioBuffer.poll()
+                        }
+                        preConnectionAudioBuffer.offer(chunk)
+                    }
+                }
+            }
+        }
+
+        // 7. If woke up in background, schedule auto-standby window to listen for user command
         if (!isAppInForeground) {
             scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
         }
 
-        // 7. Spoken greeting when coming from background to conversation mode: "Hi sir, how can I help you?"
-        triggerWakeGreeting()
+        // 8. Smart wake greeting: checks if user is already speaking a command.
+        // Suppresses canned greeting if the user spoke their command immediately (e.g. "Hey Jarvis open Chrome")
+        scheduleSmartWakeGreeting()
+    }
+
+    private fun scheduleSmartWakeGreeting() {
+        smartGreetingJob?.cancel()
+        smartGreetingJob = toolScope.launch {
+            // Wait 1200ms to see if user is speaking a command after the wake word
+            delay(1200L)
+            if (userContinuedSpeakingAfterWake || currentTurnInputText.isNotEmpty()) {
+                Log.i("JarvisVoiceService", "User spoke a direct command with/after wake word — suppressing canned greeting.")
+                return@launch
+            }
+            if (conversationState != ConversationState.ACTIVE || isInBackgroundStandby()) {
+                return@launch
+            }
+            // User paused after wake word ("Hey Jarvis... [silence]"). Greet them!
+            triggerWakeGreeting()
+        }
     }
 
     private fun vibrateBriefly() {
@@ -648,7 +726,7 @@ class JarvisVoiceService : Service() {
     private var cachedApiKey = ""
     private var cachedModelString = "models/gemini-3.1-flash-live-preview"
     private var cachedSystemPrompt = ""
-    private var cachedVoiceName = "Puck"
+    private var cachedVoiceName = "Aoede"
 
     private val SHUTDOWN_PHRASES = listOf(
         "turn off yourself", "shut down", "shutdown", "power off",
@@ -785,11 +863,21 @@ class JarvisVoiceService : Service() {
         val model = cachedModelString.ifBlank {
             prefs.getString("cached_model", "models/gemini-3.1-flash-live-preview") ?: "models/gemini-3.1-flash-live-preview"
         }
-        val voice = prefs.getString("gemini_voice", "")?.ifBlank {
+        var voice = prefs.getString("gemini_voice", "")?.ifBlank {
             prefs.getString("cached_voice", "")
         }?.ifBlank {
             cachedVoiceName
-        }?.ifBlank { "Puck" } ?: "Puck"
+        }?.ifBlank { "Aoede" } ?: "Aoede"
+        if (voice.equals("Puck", ignoreCase = true) || voice.isBlank()) {
+            voice = "Aoede"
+            try {
+                prefs.edit()
+                    .putString("gemini_voice", "Aoede")
+                    .putString("cached_voice", "Aoede")
+                    .putBoolean("is_female_voice", true)
+                    .apply()
+            } catch (_: Exception) {}
+        }
         val prompt = cachedSystemPrompt.ifBlank {
             prefs.getString("cached_prompt", "") ?: ""
         }.ifBlank {
@@ -1018,14 +1106,15 @@ class JarvisVoiceService : Service() {
                 onAudioChunkCaptured = { chunk ->
                     if (!isUserMuted) {
                         if (!isInBackgroundStandby()) {
+                            val rms = audioEngine?.calculateRms(chunk) ?: 0f
+                            if (rms > 0.04f) {
+                                touchUserActivity()
+                                userContinuedSpeakingAfterWake = true
+                            }
                             if (geminiLive?.isConnected() == true) {
                                 geminiLive?.sendAudioChunk(chunk)
-                                val rms = audioEngine?.calculateRms(chunk) ?: 0f
-                                if (rms > 0.04f) {
-                                    touchUserActivity()
-                                }
                             } else {
-                                while (preConnectionAudioBuffer.size >= 15) {
+                                while (preConnectionAudioBuffer.size >= 60) {
                                     preConnectionAudioBuffer.poll()
                                 }
                                 preConnectionAudioBuffer.offer(chunk)

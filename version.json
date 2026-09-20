@@ -1,8 +1,8 @@
 {
-  "versionCode": 131,
-  "versionName": "1.7.5",
+  "versionCode": 132,
+  "versionName": "1.7.6",
   "apkName": "Jarvis-AI-Release.apk",
   "downloadUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
   "apkUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
-  "changelog": "⚡ What's New & Fixed in v1.7.5:\n\n• 🎙️ Flawless Audio & Speech Continuity: Eliminated jitter prebuffer deadlocks and premature watchdog triggers in AudioEngine for seamless, natural voice turns.\n\n• 💬 WhatsApp Voice Reading & Replying: Added real-time notification parsing and hands-free voice replies through Gemini Live.\n\n• 🌐 Multi-Tab & Productivity Automation: Enhanced browser automation, clipboard reading, and safe background standby transitions.\n\n• 🔮 Audio-Reactive 3D Orb: Dynamic real-time pulsation and visual feedback synced to speech amplitude across all themes."
+  "changelog": "⚡ What's New & Fixed in v1.7.6:\n\n• 🎙️ Instant Background Wake Word: Upgraded Vosk recognizer with full acoustic vocabulary and continuous partial hypothesis decoding for immediate response in ambient room noise.\n\n• ⚡ Lightning Hot-Standby: WebSocket transport pause eliminates reconnect delays, providing 0ms latency hands-free activation comparable to Gemini Live.\n\n• 🧠 Zero Audio Clipping & Pre-Roll: Rolling 2-second pre-buffer captures full commands spoken immediately with the wake word (e.g. 'Hey Jarvis open Chrome').\n\n• 🔊 Hardware AGC & Mic Processing: Automatic Gain Control (AGC) hardware effect enabled to amplify faint speech across the room.\n\n• 👩 Aoede Default Voice: Aoede female voice is now the default voice for all users with seamless preference migration.\n\n• 🤖 Smart Greeting Passthrough: Suppresses canned greetings when a direct command is spoken, delivering an ultra-smooth, natural conversation experience."
 }
