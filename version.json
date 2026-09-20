@@ -1,8 +1,8 @@
 {
-  "versionCode": 137,
-  "versionName": "1.8.1",
+  "versionCode": 138,
+  "versionName": "1.8.2",
   "apkName": "Jarvis-AI-Release.apk",
   "downloadUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
   "apkUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
-  "changelog": "⚡ What's New & Fixed in v1.8.1:\n\n• 🗣️ Background Spoken Greetings & Voice Playback: Fixed background wake response so JARVIS speaks aloud ('Hi Sir, how can I help you?') and answers commands when woken from the background/recents-swiped state.\n\n• ⚡ Instant Follow-Up Window: Automatically activates conversation follow-up upon wake detection so subsequent questions or commands are processed without requiring wake word repetitions.\n\n• 🛡️ Anti-Flutter TV Noise Debouncer: Retains 2-frame debouncing and common TV distractors to eliminate spontaneous activations."
+  "changelog": "⚡ What's New & Fixed in v1.8.2:\n\n• 🔊 Background Wake-Talk-Listen Fix: JARVIS now properly speaks and continues listening after wake word detection in background mode. Eliminated the bug where JARVIS would wake up but immediately go silent or return to standby.\n\n• 🛡️ Wake Session Protection: New isWakeWordActiveSession flag prevents aggressive background auto-standby timers from killing conversations mid-response. The entire wake→speak→listen→respond cycle is now protected.\n\n• ⏱️ Extended Background Window: Background auto-standby increased from 12s to 30s, with smart deferral if JARVIS is speaking, in follow-up, or processing a wake session.\n\n• 🔄 Smart Greeting Retry: Wake greeting now waits up to 5 extra seconds for Gemini reconnection, preventing silent wakes when WebSocket is re-establishing.\n\n• 📱 Graceful Background Transition: Swiping from recents no longer immediately kills the conversation — active sessions are preserved with scheduled standby."
 }

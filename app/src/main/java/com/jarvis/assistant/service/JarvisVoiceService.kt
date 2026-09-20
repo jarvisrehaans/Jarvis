@@ -98,7 +98,7 @@ class JarvisVoiceService : Service() {
 
         private const val IDLE_TO_SLEEP_MS = 120_000L  // 2 minutes of silence -> auto-sleep
         private const val FOLLOW_UP_WINDOW_MS = 10_000L // 10s follow-up window after speech/turn
-        private const val BACKGROUND_AUTO_STANDBY_MS = 12_000L // 12s auto-standby window in background
+        private const val BACKGROUND_AUTO_STANDBY_MS = 30_000L // 30s auto-standby window in background
         @Volatile var instance: JarvisVoiceService? = null
     }
 
@@ -224,6 +224,14 @@ class JarvisVoiceService : Service() {
     private var activeFollowUpJob: Job? = null
     @Volatile private var isInFollowUpWindow = false
 
+    /**
+     * True from wake-word detection until the full wake conversation cycle completes.
+     * Prevents background auto-standby timers from killing the conversation prematurely.
+     * Cleared only when: (1) enterStandby is called, (2) the user explicitly backgrounds JARVIS,
+     * or (3) the wake session naturally times out after extended silence.
+     */
+    @Volatile private var isWakeWordActiveSession = false
+
     // --- Standby / Offline Wake Word components (Continuous in-memory Vosk Recognizer) ---
     @Volatile private var voskRecognizer: Recognizer? = null
     private var standbyActivatedTime = 0L
@@ -267,6 +275,7 @@ class JarvisVoiceService : Service() {
         currentTurnHasWakeWord = false
         isInFollowUpWindow = false
         userContinuedSpeakingAfterWake = false
+        isWakeWordActiveSession = false
         smartGreetingJob?.cancel()
 
         // 1. Sleek descending futuristic standby sound effect if requested
@@ -453,26 +462,32 @@ class JarvisVoiceService : Service() {
         if (!_isStandby.value && conversationState == ConversationState.ACTIVE) return
         Log.i("JarvisVoiceService", "WAKE WORD DETECTED! Playing wake sound and activating Live session...")
 
-        // 1. Brief haptic feedback
+        // 1. Mark wake-active session — protects conversation from premature standby
+        isWakeWordActiveSession = true
+
+        // 2. Brief haptic feedback
         vibrateBriefly()
 
-        // 2. FIRST: Play futuristic ascending wake sound
+        // 3. FIRST: Play futuristic ascending wake sound
         JarvisSoundEffects.playWakeSound()
 
-        // 3. Stop offline standby listener
+        // 4. Stop offline standby listener
         exitStandbyListening()
 
-        // 4. Reset turn state
+        // 5. Cancel any pending background auto-standby immediately
+        cancelBackgroundAutoStandby()
+
+        // 6. Reset turn state
         resetTurnState()
         currentTurnHasWakeWord = true
         userContinuedSpeakingAfterWake = false
         startFollowUpWindow()
 
-        // 5. Reconnect/Unpause Gemini Live & enter ACTIVE conversation
+        // 7. Reconnect/Unpause Gemini Live & enter ACTIVE conversation
         enterActiveState(fromWakeWord = true)
         updateNotificationState(ServiceNotificationState.LISTENING)
 
-        // 6. Immediately flush pre-roll audio so Gemini hears commands spoken right with the wake word
+        // 8. Immediately flush pre-roll audio so Gemini hears commands spoken right with the wake word
         val preRollChunks = mutableListOf<ByteArray>()
         while (!wakePreRollBuffer.isEmpty()) {
             val chunk = wakePreRollBuffer.poll() ?: break
@@ -493,12 +508,13 @@ class JarvisVoiceService : Service() {
             }
         }
 
-        // 7. If woke up in background, schedule auto-standby window to listen for user command
+        // 9. If woke up in background, schedule generous auto-standby (30s)
+        // The isWakeWordActiveSession flag will extend this further if JARVIS is speaking/listening
         if (!isAppInForeground) {
             scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
         }
 
-        // 8. Smart wake greeting: checks if user is already speaking a command.
+        // 10. Smart wake greeting: checks if user is already speaking a command.
         // Suppresses canned greeting if the user spoke their command immediately (e.g. "Hey Jarvis open Chrome")
         scheduleSmartWakeGreeting()
     }
@@ -506,14 +522,28 @@ class JarvisVoiceService : Service() {
     private fun scheduleSmartWakeGreeting() {
         smartGreetingJob?.cancel()
         smartGreetingJob = toolScope.launch {
-            // Wait 1600ms to see if user is speaking a command after the wake word
-            delay(1600L)
+            // Wait 2000ms to see if user is speaking a command after the wake word
+            // Also gives Gemini time to reconnect if session was paused
+            delay(2000L)
             if (userContinuedSpeakingAfterWake || currentTurnInputText.isNotEmpty() || audioEngine?.isCurrentlySpeaking() == true) {
                 Log.i("JarvisVoiceService", "User spoke a direct command with/after wake word or audio is playing — suppressing canned greeting.")
                 return@launch
             }
-            if (conversationState != ConversationState.ACTIVE || isInBackgroundStandby()) {
+            if (conversationState != ConversationState.ACTIVE) {
                 return@launch
+            }
+            // If Gemini isn't connected yet, wait up to 5 more seconds for it
+            if (geminiLive?.isConnected() != true) {
+                Log.d("JarvisVoiceService", "Gemini not connected yet during wake greeting — waiting up to 5s...")
+                var waited = 0L
+                while (waited < 5000L && geminiLive?.isConnected() != true && conversationState == ConversationState.ACTIVE) {
+                    delay(500L)
+                    waited += 500L
+                }
+                if (geminiLive?.isConnected() != true || conversationState != ConversationState.ACTIVE) {
+                    Log.w("JarvisVoiceService", "Gemini still not connected after waiting — skipping wake greeting")
+                    return@launch
+                }
             }
             // User paused after wake word ("Hey Jarvis... [silence]"). Greet them!
             triggerWakeGreeting()
@@ -650,12 +680,27 @@ class JarvisVoiceService : Service() {
             if (!isAppInForeground && conversationState == ConversationState.ACTIVE && !_isStandby.value) {
                 val isSpeaking = audioEngine?.isCurrentlySpeaking() == true
                 if (isSpeaking) {
-                    scheduleBackgroundAutoStandby(4_000L)
+                    // JARVIS is still talking — defer standby until after speech finishes + follow-up
+                    Log.d("JarvisVoiceService", "Background auto-standby deferred: JARVIS is speaking")
+                    scheduleBackgroundAutoStandby(5_000L)
                     return@launch
                 }
                 if (isInFollowUpWindow) {
-                    scheduleBackgroundAutoStandby(4_000L)
+                    // Active follow-up window — user might still respond
+                    Log.d("JarvisVoiceService", "Background auto-standby deferred: follow-up window active")
+                    scheduleBackgroundAutoStandby(5_000L)
                     return@launch
+                }
+                if (isWakeWordActiveSession) {
+                    // Wake word session still active — JARVIS is processing or waiting for Gemini
+                    val silenceSinceLastSpeech = System.currentTimeMillis() - lastUserSpeechTimeMs
+                    if (silenceSinceLastSpeech < 20_000L) {
+                        Log.d("JarvisVoiceService", "Background auto-standby deferred: wake session active, silence=${silenceSinceLastSpeech}ms")
+                        scheduleBackgroundAutoStandby(8_000L)
+                        return@launch
+                    }
+                    // Extended silence even during wake session — safe to standby now
+                    Log.d("JarvisVoiceService", "Wake session timed out after ${silenceSinceLastSpeech}ms silence")
                 }
                 Log.d("JarvisVoiceService", "Background timeout (${delayMs}ms) elapsed -> returning to standby")
                 enterStandby(sayGoodbye = false, playSound = false)
@@ -731,20 +776,27 @@ class JarvisVoiceService : Service() {
                 }
             }
         } else {
-            updateNotificationState(ServiceNotificationState.STANDBY)
             if (screenCaptureEngine == null && cameraVisionEngine?.isCameraStreaming() != true) {
-                // When app moves to background, enter standby promptly so room conversations aren't overheard
+                // Don't immediately kill the session — schedule a graceful standby transition.
+                // This allows wake-word conversations to continue even when the Activity goes to background.
                 val isSpeaking = audioEngine?.isCurrentlySpeaking() == true
-                if (!isSpeaking) {
-                    enterStandby(sayGoodbye = false, playSound = false)
+                if (isSpeaking || isWakeWordActiveSession || isInFollowUpWindow) {
+                    // JARVIS is actively speaking, in a wake session, or in follow-up — don't enter standby yet
+                    Log.d("JarvisVoiceService", "App backgrounded but active session continues (speaking=$isSpeaking, wakeSession=$isWakeWordActiveSession, followUp=$isInFollowUpWindow)")
+                    updateNotificationState(ServiceNotificationState.LISTENING)
+                    scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
                 } else {
-                    scheduleBackgroundAutoStandby(5000L) // Wait for current speaking to finish
+                    // No active interaction — enter standby after a brief delay to catch edge cases
+                    updateNotificationState(ServiceNotificationState.STANDBY)
+                    scheduleBackgroundAutoStandby(3_000L)
                 }
             }
         }
     }
 
     private fun isVoicePlaybackAllowed(): Boolean {
+        // Allow playback if: (1) not in standby, OR (2) wake-word session is active (JARVIS is responding to user)
+        if (isWakeWordActiveSession && conversationState == ConversationState.ACTIVE) return true
         if (isInBackgroundStandby()) return false
         return true
     }
@@ -870,7 +922,17 @@ class JarvisVoiceService : Service() {
         acquireWakeLock()
         ensureMicrophoneForegroundService()
         ensureSessionActive()
-        enterStandby(sayGoodbye = false, playSound = false)
+
+        // Don't immediately enter standby — give a grace period for any active conversation to finish.
+        // If JARVIS was speaking or in a wake session, let the auto-standby timer handle it gracefully.
+        val isSpeaking = audioEngine?.isCurrentlySpeaking() == true
+        if (isSpeaking || isWakeWordActiveSession || isInFollowUpWindow) {
+            Log.d("JarvisVoiceService", "onTaskRemoved: active session detected (speaking=$isSpeaking, wake=$isWakeWordActiveSession, followUp=$isInFollowUpWindow) — deferring standby")
+            scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
+        } else {
+            // No active interaction — enter standby after brief delay
+            scheduleBackgroundAutoStandby(2_000L)
+        }
 
         try {
             val restartIntent = Intent(applicationContext, JarvisVoiceService::class.java)
@@ -1192,7 +1254,22 @@ class JarvisVoiceService : Service() {
                     audioEngine?.setStreamingPaused(false)
                     if (!_isStandby.value && conversationState == ConversationState.ACTIVE) {
                         geminiLive?.setAudioTransportPaused(false)
-                        updateNotificationState(ServiceNotificationState.IDLE)
+                        if (isWakeWordActiveSession && !isAppInForeground) {
+                            // Wake session in background: JARVIS just finished speaking.
+                            // Keep listening for user's follow-up response.
+                            updateNotificationState(ServiceNotificationState.LISTENING)
+                            Log.d("JarvisVoiceService", "Background wake session: JARVIS finished speaking — staying active for follow-up")
+                        } else {
+                            updateNotificationState(ServiceNotificationState.IDLE)
+                        }
+                        startFollowUpWindow()
+                    } else if (isWakeWordActiveSession) {
+                        // Wake session is active but state got out of sync — recover to ACTIVE
+                        Log.w("JarvisVoiceService", "Wake session active but state is standby/sleeping — recovering to ACTIVE")
+                        conversationState = ConversationState.ACTIVE
+                        _isStandby.value = false
+                        geminiLive?.setAudioTransportPaused(false)
+                        updateNotificationState(ServiceNotificationState.LISTENING)
                         startFollowUpWindow()
                     } else {
                         // Standby / Sleeping: keep Gemini transport suspended and cancel follow-up window
