@@ -27,28 +27,28 @@ class AudioEngine(private val context: Context) {
         // Buffers an initial 100ms cushion so network bursts/jitter never cause AudioTrack underruns.
         private const val PREBUFFER_BYTES = 4800
 
-        // Debounce before declaring speech finished: 550ms absorbs normal network jitter
+        // Debounce before declaring speech finished: 400ms absorbs normal network jitter
         // gaps between Gemini WebSocket audio chunks without falsely chopping AudioTrack mid-sentence.
-        private const val SPEAK_STOP_DEBOUNCE_MS = 550L
+        private const val SPEAK_STOP_DEBOUNCE_MS = 400L
 
         // Post-speech echo guard: 120ms (3 chunks) cleanly absorbs the room reverberation
         // without eating the user's first words when they reply.
         private const val ECHO_COOLDOWN_MS = 120L
 
-        // Grace period at the beginning of speech: 600ms protects turn onset from initial
+        // Grace period at the beginning of speech: 800ms protects turn onset from initial
         // speaker attack while allowing fast user interruption.
-        private const val INITIAL_BARGE_IN_GRACE_MS = 600L
+        private const val INITIAL_BARGE_IN_GRACE_MS = 800L
 
         // Minimum viable audio chunk size: skip padding/header-only chunks from Gemini.
         private const val MIN_PLAYABLE_CHUNK_BYTES = 100
 
         // Barge-In thresholds (40ms chunks):
-        // On loudspeaker, loud user voice reaches RMS 0.28 - 0.40.
-        // Sustained for 3 chunks (120ms), it reliably triggers barge-in when talking loudly.
+        // On loudspeaker, speaker audio feedback can peak around 0.25-0.32. Setting threshold to 0.40f
+        // and 5 chunks (200ms) prevents speaker self-interruption while allowing genuine intentional user barge-in.
         private const val BARGE_IN_RMS_HEADSET = 0.08f
         private const val BARGE_IN_CHUNKS_HEADSET = 2
-        private const val BARGE_IN_RMS_SPEAKER = 0.28f
-        private const val BARGE_IN_CHUNKS_SPEAKER = 3
+        private const val BARGE_IN_RMS_SPEAKER = 0.40f
+        private const val BARGE_IN_CHUNKS_SPEAKER = 5
         // Deep queue headroom so network bursts from Gemini are never dropped
         private const val MAX_QUEUE_CHUNKS = 200
     }
@@ -72,9 +72,8 @@ class AudioEngine(private val context: Context) {
     @Volatile private var isStreamingPaused = false
     @Volatile private var speakingStartTimeMs = 0L
     @Volatile private var lastSpeakingEndTimeMs = 0L
-    @Volatile private var prebufferByteCount = 0
-    @Volatile private var prebufferDone = false
     @Volatile private var lastQueuedTimeMs = 0L
+    @Volatile private var lastChunkPlayedTimeMs = 0L
 
     private val playbackQueue = ConcurrentLinkedQueue<ByteArray>()
     private val engineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -373,13 +372,17 @@ class AudioEngine(private val context: Context) {
                             val rms = calculateRms(chunk)
                             val now = System.currentTimeMillis()
 
-                            // Auto-heal stuck isSpeaking state if speaker has been truly quiet/deadlocked for 8s
-                            val queueIdleDuration = if (lastQueuedTimeMs > 0L) (now - lastQueuedTimeMs) else (now - speakingStartTimeMs)
-                            if (isSpeaking && playbackQueue.isEmpty() && (playbackJob?.isActive != true || queueIdleDuration > 8_000L)) {
-                                Log.w(TAG, "Watchdog: clearing stuck isSpeaking flag (queue idle ${queueIdleDuration}ms) to restore mic streaming")
+                            // Auto-heal stuck isSpeaking state only if completely silent and deadlocked for >2.5s
+                            val sinceQueued = if (lastQueuedTimeMs > 0L) (now - lastQueuedTimeMs) else Long.MAX_VALUE
+                            val sincePlayed = if (lastChunkPlayedTimeMs > 0L) (now - lastChunkPlayedTimeMs) else Long.MAX_VALUE
+                            val sinceStarted = if (speakingStartTimeMs > 0L) (now - speakingStartTimeMs) else Long.MAX_VALUE
+                            if (isSpeaking && sinceQueued > 2500L && sincePlayed > 2500L && sinceStarted > 2500L) {
+                                Log.w(TAG, "Watchdog: clearing stuck isSpeaking flag (no activity for ${sincePlayed}ms, qSize=${playbackQueue.size}) to restore mic streaming")
+                                playbackQueue.clear()
                                 isSpeaking = false
                                 isStreamingPaused = false
                                 lastSpeakingEndTimeMs = now
+                                abandonPlaybackAudioFocus()
                                 engineScope.launch(Dispatchers.Main) {
                                     onSpeakingStopped?.invoke()
                                 }
@@ -537,34 +540,11 @@ class AudioEngine(private val context: Context) {
             audioTrack = createAudioTrack()
         }
 
-        // Reset pre-buffer state for each new playback session
-        prebufferByteCount = 0
-        prebufferDone = false
-
         playbackJob = engineScope.launch(Dispatchers.IO) {
             var silenceSinceMs = 0L
 
             while (isActive) {
                 try {
-                    // Jitter cushion: ensure initial buffer has at least 1-2 chunks before beginning playback
-                    if (!prebufferDone) {
-                        if (playbackQueue.isEmpty()) {
-                            delay(10)
-                            continue
-                        }
-                        var totalQueuedBytes = 0
-                        for (qChunk in playbackQueue) {
-                            totalQueuedBytes += qChunk.size
-                            if (totalQueuedBytes >= PREBUFFER_BYTES) break
-                        }
-                        if (totalQueuedBytes >= PREBUFFER_BYTES || playbackQueue.size >= 2) {
-                            prebufferDone = true
-                        } else {
-                            delay(15)
-                            continue
-                        }
-                    }
-
                     val chunk = playbackQueue.poll()
                     if (chunk != null) {
                         silenceSinceMs = 0L
@@ -605,6 +585,7 @@ class AudioEngine(private val context: Context) {
                                 Log.e(TAG, "AudioTrack write exception: ${e.message}")
                                 recreateAudioTrack()
                             }
+                            lastChunkPlayedTimeMs = System.currentTimeMillis()
                         }
 
                         try { onAmplitudeChanged?.invoke(calculateRms(chunk)) } catch (_: Exception) {}
@@ -618,15 +599,13 @@ class AudioEngine(private val context: Context) {
                             if (elapsed >= SPEAK_STOP_DEBOUNCE_MS && playbackQueue.isEmpty()) {
                                 isSpeaking = false
                                 lastSpeakingEndTimeMs = System.currentTimeMillis()
-                                prebufferByteCount = 0
-                                prebufferDone = false
                                 silenceSinceMs = 0L
                                 abandonPlaybackAudioFocus()
                                 Log.i(TAG, "Audio playback turn finished naturally, mic unblocked")
                                 try { withContext(Dispatchers.Main) { onSpeakingStopped?.invoke() } } catch (_: Exception) {}
                             }
                         }
-                        delay(15)
+                        delay(12)
                     }
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
@@ -675,12 +654,14 @@ class AudioEngine(private val context: Context) {
             startPlayback()
         }
         // Immediately silence mic streaming before speaker output begins
+        val now = System.currentTimeMillis()
         if (!isSpeaking) {
-            speakingStartTimeMs = System.currentTimeMillis()
+            speakingStartTimeMs = now
+            lastChunkPlayedTimeMs = now
             Log.i(TAG, "Audio playback starting: received first real chunk (${pcmBytes.size} bytes)")
         }
         isSpeaking = true
-        lastQueuedTimeMs = System.currentTimeMillis()
+        lastQueuedTimeMs = now
         while (playbackQueue.size >= MAX_QUEUE_CHUNKS) {
             playbackQueue.poll() // drop oldest chunk if buffer is bloated to prevent lag & voice freeze
         }
@@ -706,9 +687,9 @@ class AudioEngine(private val context: Context) {
         isStreamingPaused = false
         lastSpeakingEndTimeMs = System.currentTimeMillis()
         speakingStartTimeMs = 0L
+        lastChunkPlayedTimeMs = 0L
+        lastQueuedTimeMs = 0L
         externalSpeakingTimeoutJob?.cancel()
-        prebufferByteCount = 0
-        prebufferDone = false
         abandonPlaybackAudioFocus()
         // Thread-safe: dispatch to main thread since callers may be on any thread
         engineScope.launch(Dispatchers.Main) {
@@ -744,7 +725,7 @@ class AudioEngine(private val context: Context) {
         engineScope.cancel()
     }
 
-    private fun calculateRms(chunk: ByteArray): Float {
+    fun calculateRms(chunk: ByteArray): Float {
         if (chunk.isEmpty()) return 0f
         var sum = 0.0
         var i = 0

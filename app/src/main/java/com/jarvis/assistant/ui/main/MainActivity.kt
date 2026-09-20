@@ -1153,6 +1153,9 @@ class MainActivity : AppCompatActivity() {
                 checkApiKeyAndExecute {
                     if (isShutDown || voiceService?.isSessionRunning() != true) {
                         restartJarvis()
+                    } else if (voiceService?.isStandby?.value == true) {
+                        voiceService?.enterActiveState(fromWakeWord = false)
+                        setOrbState(OrbState.LISTENING)
                     } else {
                         toggleMute()
                     }
@@ -1182,6 +1185,9 @@ class MainActivity : AppCompatActivity() {
                 checkApiKeyAndExecute {
                     if (isShutDown || voiceService?.isSessionRunning() != true) {
                         restartJarvis()
+                    } else if (voiceService?.isStandby?.value == true) {
+                        voiceService?.enterActiveState(fromWakeWord = false)
+                        setOrbState(OrbState.LISTENING)
                     } else {
                         toggleMute()
                     }
@@ -1210,6 +1216,9 @@ class MainActivity : AppCompatActivity() {
                 checkApiKeyAndExecute {
                     if (isShutDown || voiceService?.isSessionRunning() != true) {
                         restartJarvis()
+                    } else if (voiceService?.isStandby?.value == true) {
+                        voiceService?.enterActiveState(fromWakeWord = false)
+                        setOrbState(OrbState.LISTENING)
                     } else {
                         toggleMute()
                     }
@@ -1223,6 +1232,9 @@ class MainActivity : AppCompatActivity() {
                 if (isDown) {
                     if (isShutDown || voiceService?.isSessionRunning() != true) {
                         restartJarvis()
+                    } else if (voiceService?.isStandby?.value == true) {
+                        voiceService?.enterActiveState(fromWakeWord = false)
+                        setOrbState(OrbState.LISTENING)
                     } else {
                         if (isMuted) toggleMute()
                     }

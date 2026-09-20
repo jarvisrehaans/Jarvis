@@ -1,8 +1,8 @@
 {
-  "versionCode": 130,
-  "versionName": "1.7.4",
+  "versionCode": 131,
+  "versionName": "1.7.5",
   "apkName": "Jarvis-AI-Release.apk",
   "downloadUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
   "apkUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
-  "changelog": "⚡ What's New & Fixed in v1.7.4:\n\n• 🔊 Smooth Audio & Zero Voice Breaking: Fixed audio stuttering and chopping after long background idle periods by eliminating inter-chunk pauses and deploying dynamic AudioFocus management with ducking.\n\n• 🛡️ 1-Second Headroom & Jitter Cushion: Upgraded playback buffer to 48KB (1 full second) with a 4.8KB pre-buffering cushion, completely preventing DAC buffer underruns from network delays.\n\n• 🎙️ Audio Hardware Re-sync: Added automatic AudioRecord re-alignment on wake from background standby to ensure seamless speech capture."
+  "changelog": "⚡ What's New & Fixed in v1.7.5:\n\n• 🎙️ Flawless Audio & Speech Continuity: Eliminated jitter prebuffer deadlocks and premature watchdog triggers in AudioEngine for seamless, natural voice turns.\n\n• 💬 WhatsApp Voice Reading & Replying: Added real-time notification parsing and hands-free voice replies through Gemini Live.\n\n• 🌐 Multi-Tab & Productivity Automation: Enhanced browser automation, clipboard reading, and safe background standby transitions.\n\n• 🔮 Audio-Reactive 3D Orb: Dynamic real-time pulsation and visual feedback synced to speech amplitude across all themes."
 }

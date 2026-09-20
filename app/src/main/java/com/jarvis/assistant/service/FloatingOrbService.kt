@@ -307,6 +307,7 @@ class FloatingOrbService : Service() {
 
     private fun triggerVoiceAction() {
         if (voiceService?.isSessionRunning() == true) {
+            voiceService?.enterActiveState(fromWakeWord = false)
             updateOrbState(OrbAnimationView.OrbState.LISTENING)
         } else {
             openMainActivity()

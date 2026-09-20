@@ -304,6 +304,12 @@ class PermissionsActivity : AppCompatActivity() {
         if (!isPermissionGranted(Manifest.permission.READ_PHONE_STATE)) {
             permissionsToRequest.add(Manifest.permission.READ_PHONE_STATE)
         }
+        if (!isPermissionGranted(Manifest.permission.READ_CALENDAR)) {
+            permissionsToRequest.add(Manifest.permission.READ_CALENDAR)
+        }
+        if (!isPermissionGranted(Manifest.permission.WRITE_CALENDAR)) {
+            permissionsToRequest.add(Manifest.permission.WRITE_CALENDAR)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (!isPermissionGranted(Manifest.permission.POST_NOTIFICATIONS)) {
                 permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)

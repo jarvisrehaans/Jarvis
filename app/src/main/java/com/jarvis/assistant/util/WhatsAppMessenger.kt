@@ -256,4 +256,83 @@ object WhatsAppMessenger {
             null
         }
     }
+
+    /**
+     * Opens a specific contact's chat in WhatsApp.
+     * 1. Resolves contact in ContactsContract
+     * 2. Checks dual app status
+     * 3. Requires confirmation if confirmed == false
+     * 4. If confirmed: launches Intent with deep link https://api.whatsapp.com/send?phone=...
+     *    Fallback: Uses JarvisAccessibilityService.instance?.openWhatsAppChat(contactName, appNumber)
+     */
+    fun openChat(
+        context: Context,
+        contactName: String,
+        appNumber: Int? = null,
+        confirmed: Boolean = false
+    ): SendResult {
+        val matches = ContactCaller.findMatches(context, contactName)
+        if (matches.isNotEmpty()) {
+            val targetContact = if (matches.size > 1) {
+                matches.firstOrNull { it.name.equals(contactName.trim(), ignoreCase = true) } ?: matches.first()
+            } else {
+                matches.first()
+            }
+
+            val rawNumber = targetContact.number.filter { it.isDigit() || it == '+' }
+            var phoneDigits = rawNumber.filter { it.isDigit() }
+            if (phoneDigits.length == 10) {
+                phoneDigits = "91$phoneDigits"
+            } else if (phoneDigits.startsWith("0") && phoneDigits.length == 11) {
+                phoneDigits = "91" + phoneDigits.substring(1)
+            }
+
+            val appMatches = AppLauncher.findMatchingApps(context, "WhatsApp")
+            val isDual = appMatches.size >= 2 || (appMatches.isNotEmpty() && AppLauncher.isDualAppEnabled(context, appMatches[0].packageName))
+            if (isDual && appNumber == null) {
+                return SendResult.MultipleAppsFound(targetContact.name, if (appMatches.size >= 2) appMatches.size else 2)
+            }
+
+            if (!confirmed) {
+                return SendResult.RequiresConfirmation(targetContact.name, phoneDigits, "")
+            }
+
+            val deepLinkUrl = "https://api.whatsapp.com/send?phone=$phoneDigits"
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(deepLinkUrl)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+            val targetIndex = (appNumber ?: 1) - 1
+            val targetApp = if (appMatches.isNotEmpty() && targetIndex in appMatches.indices) {
+                appMatches[targetIndex]
+            } else {
+                appMatches.firstOrNull()
+            }
+            val chosenPackage = targetApp?.packageName ?: if (appNumber == 2) "com.whatsapp.w4b" else "com.whatsapp"
+            intent.setPackage(chosenPackage)
+
+            return try {
+                context.startActivity(intent)
+                SendResult.Success(targetContact.name, phoneDigits, chosenPackage)
+            } catch (e: Exception) {
+                val accOk = JarvisAccessibilityService.instance?.openWhatsAppChat(targetContact.name, appNumber) ?: false
+                if (accOk) {
+                    SendResult.Success(targetContact.name, phoneDigits, chosenPackage)
+                } else {
+                    SendResult.Error("Could not open WhatsApp chat for ${targetContact.name}: ${e.message}")
+                }
+            }
+        }
+
+        if (!confirmed) {
+            return SendResult.RequiresConfirmation(contactName, "", "")
+        }
+
+        val accOk = JarvisAccessibilityService.instance?.openWhatsAppChat(contactName, appNumber) ?: false
+        return if (accOk) {
+            SendResult.Success(contactName, "", "com.whatsapp")
+        } else {
+            SendResult.ContactNotFound(contactName)
+        }
+    }
 }
+

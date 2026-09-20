@@ -285,7 +285,19 @@ class JarvisAccessibilityService : AccessibilityService() {
             if (candidates.isEmpty()) return false
 
             val target = candidates.minByOrNull { nodeLabel(it).length } ?: return false
-            target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+
+            // PRECISION TAP: Try ACTION_CLICK first, then fall back to physical
+            // dispatchGesture tap at the element's exact center coordinates.
+            // ACTION_CLICK only fires the click listener — it won't work on elements
+            // that handle touch events directly (e.g. YouTube play button, video
+            // thumbnails). dispatchGesture simulates a real physical finger tap.
+            val clickOk = target.performAction(AccessibilityNodeInfo.ACTION_CLICK) ||
+                          target.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true ||
+                          target.parent?.parent?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+            if (clickOk) return true
+
+            // Fallback: physical gesture tap at element center
+            return tapNodeCenter(target) || tapNodePhysically(target)
         } catch (e: Exception) {
             Log.w(TAG, "clickNodeMatching exception", e)
             false
@@ -305,8 +317,16 @@ class JarvisAccessibilityService : AccessibilityService() {
             val label = nodeLabel(node).lowercase()
             if (label.isNotBlank()) {
                 val matches = keywords.any { label.contains(it) } && (exclude == null || !label.contains(exclude))
-                if (matches && (node.isClickable || node.isCheckable)) {
-                    out.add(node)
+                if (matches) {
+                    if (node.isClickable || node.isCheckable) {
+                        out.add(node)
+                    } else if (node.parent?.isClickable == true) {
+                        out.add(node.parent)
+                    } else if (node.parent?.parent?.isClickable == true) {
+                        out.add(node.parent.parent)
+                    } else {
+                        out.add(node)
+                    }
                 }
             }
 
@@ -323,31 +343,86 @@ class JarvisAccessibilityService : AccessibilityService() {
     // Generic Mobile Touch, Typing & Gesture Actions
     // ---------------------------------------------------------------
 
-    /** Click any visible node matching [text]. */
+    /**
+     * Taps the exact center of an AccessibilityNodeInfo using hardware-level physical touch gesture (dispatchGesture).
+     * This bypasses virtual performAction(ACTION_CLICK) limitations on YouTube, Compose, Flutter, and web views.
+     */
+    fun tapNodeCenter(node: AccessibilityNodeInfo): Boolean {
+        val bounds = android.graphics.Rect()
+        node.getBoundsInScreen(bounds)
+        if (bounds.width() > 0 && bounds.height() > 0) {
+            val centerX = bounds.centerX().toFloat()
+            val centerY = bounds.centerY().toFloat()
+            if (tapAtAbsoluteCoordinates(centerX, centerY)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /** Click any visible node matching [text]. Uses true physical touch gesture on element center for 100% precision. */
     fun clickNodeWithText(text: String): Boolean {
         if (text.isBlank()) return false
         val root = rootInActiveWindow ?: return false
         val lowerText = text.lowercase()
         val candidates = mutableListOf<AccessibilityNodeInfo>()
         collectMatches(root, listOf(lowerText), null, candidates)
-        if (candidates.isEmpty()) {
-            // Try partial match without clickability restriction, then walk up parents
-            val anyNodes = mutableListOf<AccessibilityNodeInfo>()
-            collectAllNodesWithText(root, lowerText, anyNodes)
-            for (node in anyNodes) {
-                var current: AccessibilityNodeInfo? = node
-                while (current != null) {
-                    if (current.isClickable) {
-                        return current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    }
-                    current = current.parent
-                }
-            }
-            return false
+        if (candidates.isNotEmpty()) {
+            val target = candidates.minByOrNull { nodeLabel(it).length } ?: candidates.first()
+            if (tapNodeCenter(target)) return true
+            if (target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
         }
-        val target = candidates.minByOrNull { nodeLabel(it).length } ?: return false
-        return target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        // Try partial match without clickability restriction, then physical tap center or walk up
+        val anyNodes = mutableListOf<AccessibilityNodeInfo>()
+        collectAllNodesWithText(root, lowerText, anyNodes)
+        for (node in anyNodes) {
+            if (tapNodeCenter(node)) return true
+            var current: AccessibilityNodeInfo? = node
+            while (current != null) {
+                if (current.isClickable && current.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    return true
+                }
+                current = current.parent
+            }
+        }
+        return false
     }
+
+    /**
+     * Smart media target finder for commands like "tap this", "play this", "tap on video", etc.
+     * Accurately finds play buttons, video thumbnails, or screen elements and taps their exact center.
+     */
+    fun findAndClickMediaTarget(target: String = ""): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val cleanTarget = target.lowercase().trim()
+
+        // 1. If cleanTarget has specific text, try clickNodeWithText first
+        if (cleanTarget.isNotBlank() && cleanTarget != "this" && cleanTarget != "it" && cleanTarget != "video" && cleanTarget != "play") {
+            if (clickNodeWithText(cleanTarget)) return true
+        }
+
+        // 2. Look for Play/Pause buttons or video titles/thumbnails
+        val mediaKeywords = listOf("play", "video", "thumbnail", "watch", "stream")
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        collectMatches(root, mediaKeywords, null, candidates)
+        for (candidate in candidates) {
+            if (tapNodeCenter(candidate)) return true
+            if (candidate.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+        }
+
+        // 3. Look for clickable video containers
+        val videoNodes = mutableListOf<AccessibilityNodeInfo>()
+        collectClickableVideoNodes(root, videoNodes)
+        if (videoNodes.isNotEmpty()) {
+            val vTarget = videoNodes.first()
+            if (tapNodeCenter(vTarget)) return true
+            if (vTarget.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+        }
+
+        // 4. Default fallback: tap center of the screen
+        return tapAtPercentage(50f, 40f)
+    }
+
 
     /** Tap at normalized screen percentages (x: 0..100, y: 0..100). */
     fun tapAtPercentage(xPercent: Float, yPercent: Float): Boolean {
@@ -531,7 +606,9 @@ class JarvisAccessibilityService : AccessibilityService() {
         val candidates = mutableListOf<AccessibilityNodeInfo>()
         collectClickableVideoNodes(root, candidates)
         if (candidates.isNotEmpty()) {
-            return candidates.first().performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            val target = candidates.first()
+            if (tapNodeCenter(target)) return true
+            return target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         }
         return tapAtPercentage(50f, 30f)
     }
@@ -1605,4 +1682,477 @@ class JarvisAccessibilityService : AccessibilityService() {
             }
         }
     }
-}
+
+    // ---------------------------------------------------------------
+    // PRECISION PHYSICAL TAP ENGINE
+    // Uses dispatchGesture to simulate a real physical finger tap at
+    // the exact center of any AccessibilityNodeInfo's screen bounds.
+    // This is MORE RELIABLE than ACTION_CLICK for YouTube play buttons,
+    // video thumbnails, and other custom-drawn UI controls.
+    // ---------------------------------------------------------------
+
+    /**
+     * Physically taps the center of [node]'s screen bounds using dispatchGesture.
+     * Returns true if the gesture was dispatched successfully.
+     */
+    fun tapNodePhysically(node: AccessibilityNodeInfo): Boolean {
+        val bounds = android.graphics.Rect()
+        node.getBoundsInScreen(bounds)
+        if (bounds.width() <= 0 || bounds.height() <= 0) return false
+        return tapAtAbsoluteCoordinates(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+    }
+
+    // ---------------------------------------------------------------
+    // CHROME SMART BROWSER AUTOMATION
+    // ---------------------------------------------------------------
+
+    /**
+     * Opens a new Chrome Incognito tab.
+     * Strategy 1: Direct native Android Intent with IncognitoTabLauncher (instant, zero UI lag).
+     * Strategy 2: Chrome View intent with EXTRA_OPEN_NEW_INCOGNITO_TAB.
+     * Strategy 3: Accessibility UI navigation (Menu -> New incognito tab).
+     */
+    fun openChromeIncognito(): Boolean {
+        // Priority 1: Direct IncognitoTabLauncher intent (Native Chrome component, 100% reliable)
+        try {
+            val directIntent = android.content.Intent("org.chromium.chrome.browser.incognito.OPEN_PRIVATE_TAB").apply {
+                component = android.content.ComponentName("com.android.chrome", "org.chromium.chrome.browser.incognito.IncognitoTabLauncher")
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            applicationContext.startActivity(directIntent)
+            return true
+        } catch (e: Exception) {
+            Log.d(TAG, "Direct IncognitoTabLauncher intent failed, trying standard intent", e)
+        }
+
+        // Priority 2: Chrome Main with EXTRA_OPEN_NEW_INCOGNITO_TAB
+        try {
+            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("about:blank")).apply {
+                setPackage("com.android.chrome")
+                putExtra("com.google.android.apps.chrome.EXTRA_OPEN_NEW_INCOGNITO_TAB", true)
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            applicationContext.startActivity(intent)
+            return true
+        } catch (e: Exception) {
+            Log.d(TAG, "Chrome extra incognito intent failed, trying accessibility", e)
+        }
+
+        // Priority 3: Accessibility UI navigation fallback
+        try {
+            val launchIntent = applicationContext.packageManager.getLaunchIntentForPackage("com.android.chrome")?.apply {
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            if (launchIntent != null) applicationContext.startActivity(launchIntent)
+            Thread.sleep(800)
+
+            val menuTapped = clickNodeMatching("customize and control", "more options", "menu") ||
+                tapChromeMenuButton()
+            if (!menuTapped) return false
+            Thread.sleep(400)
+
+            return clickNodeMatching("new incognito tab", "incognito")
+        } catch (e: Exception) {
+            Log.w(TAG, "openChromeIncognito failed", e)
+            return false
+        }
+    }
+
+    /**
+     * Retrieves root AccessibilityNodeInfo instances across all interactive windows.
+     * Guaranteed to find popups, menus, dialogs, and overlays.
+     */
+    private fun getAllRoots(): List<AccessibilityNodeInfo> {
+        val roots = mutableListOf<AccessibilityNodeInfo>()
+        rootInActiveWindow?.let { roots.add(it) }
+        try {
+            val winList = windows
+            if (winList != null) {
+                for (w in winList) {
+                    val r = w.root
+                    if (r != null && roots.none { it == r }) {
+                        roots.add(r)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "getAllRoots error", e)
+        }
+        return roots
+    }
+
+    private fun collectFromAllRoots(needle: String): List<AccessibilityNodeInfo> {
+        val results = mutableListOf<AccessibilityNodeInfo>()
+        for (root in getAllRoots()) {
+            collectByResourceId(root, needle, results)
+        }
+        return results
+    }
+
+    private fun isChromeInTabSwitcher(): Boolean {
+        val roots = getAllRoots()
+        for (r in roots) {
+            val hub = mutableListOf<AccessibilityNodeInfo>()
+            collectByResourceId(r, "hub_main_container", hub)
+            collectByResourceId(r, "tab_switcher_view_holder", hub)
+            collectByResourceId(r, "pane_switcher", hub)
+            if (hub.isNotEmpty()) return true
+            val menu = mutableListOf<AccessibilityNodeInfo>()
+            collectByResourceId(r, "menu_button", menu)
+            for (m in menu) {
+                val desc = m.contentDescription?.toString()?.lowercase() ?: ""
+                if (desc.contains("manage open tabs")) return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * Checks whether any node currently in view matches the specified keywords.
+     */
+    fun hasNodeMatching(vararg keywords: String): Boolean {
+        val roots = getAllRoots()
+        val lowerKeywords = keywords.map { it.lowercase() }
+        for (root in roots) {
+            val candidates = mutableListOf<AccessibilityNodeInfo>()
+            collectMatches(root, lowerKeywords, null, candidates)
+            if (candidates.isNotEmpty()) return true
+        }
+        return false
+    }
+
+    /**
+     * Closes all Chrome tabs.
+     * Verified Chrome flow on Android:
+     * 1. Ensure Chrome is in foreground.
+     * 2. Check if Tab Switcher is already open; if not, tap tab_switcher_button ("See X tabs") - strictly avoiding "New tab".
+     * 3. Tap 3-dot Menu (menu_button with content-desc "Manage open tabs") using virtual performAction(ACTION_CLICK)
+     *    WITHOUT coordinate dispatch, preventing touch-bleed into item 0 ("New tab").
+     * 4. Tap "Close all tabs" (close_all_tabs_menu_id) or "Close all Incognito tabs" (close_all_incognito_tabs_menu_id).
+     * 5. In confirmation modal dialog, tap positive_button ("Close all tabs and groups" / "Close all tabs").
+     * 6. Also checks secondary tab pane (Incognito vs Standard) and closes remaining tabs if present.
+     */
+    fun closeChromeAllTabs(): Boolean {
+        try {
+            // Ensure Chrome is in foreground
+            val launchIntent = applicationContext.packageManager.getLaunchIntentForPackage("com.android.chrome")?.apply {
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            if (launchIntent != null) applicationContext.startActivity(launchIntent)
+            Thread.sleep(600)
+
+            fun closeActiveTabSet(): Boolean {
+                // Step 1: Open Tab Switcher if not already open
+                if (!isChromeInTabSwitcher()) {
+                    var switcherTapped = false
+                    val switcherNodes = collectFromAllRoots("tab_switcher_button")
+                    for (node in switcherNodes) {
+                        if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK) || tapNodeCenter(node)) {
+                            switcherTapped = true
+                            break
+                        }
+                    }
+                    if (!switcherTapped) {
+                        // Fallback: search for "see ... tabs" or "switch tabs", strictly EXCLUDING "new tab"
+                        val switcherMatches = mutableListOf<AccessibilityNodeInfo>()
+                        for (r in getAllRoots()) {
+                            collectMatches(r, listOf("see", "switch tabs"), "new tab", switcherMatches)
+                        }
+                        for (node in switcherMatches) {
+                            val desc = (node.contentDescription?.toString() ?: node.text?.toString() ?: "").lowercase()
+                            if (!desc.contains("new tab") && (desc.startsWith("see") || desc.contains("switch tabs"))) {
+                                switcherTapped = node.performAction(AccessibilityNodeInfo.ACTION_CLICK) || tapNodeCenter(node)
+                                if (switcherTapped) break
+                            }
+                        }
+                    }
+                    Thread.sleep(600)
+                }
+
+                // Check if tabs are already empty
+                val emptyNodes = collectFromAllRoots("empty_state_container")
+                if (emptyNodes.isNotEmpty()) {
+                    Log.i(TAG, "closeChromeAllTabs: tab switcher is already empty")
+                    return true
+                }
+
+                // Step 2: Open 3-dot Menu ("Manage open tabs")
+                // CRITICAL BUG FIX: Never use hardware tapNodeCenter on (1014, 165).
+                // In Chrome, the popup menu opens instantly on touch-down, and item 0 ("New tab")
+                // directly overlaps (1014, 165), so gesture touch-up clicks "New tab"!
+                // We use virtual performAction(ACTION_CLICK) which sends NO screen coordinates.
+                var menuOpened = false
+                val menuNodes = collectFromAllRoots("menu_button")
+                for (m in menuNodes) {
+                    val desc = m.contentDescription?.toString()?.lowercase() ?: ""
+                    if (desc.contains("manage open tabs") || desc.contains("more options") || desc.contains("customize")) {
+                        menuOpened = m.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        if (!menuOpened) {
+                            val p = m.parent
+                            if (p != null && p.isClickable) {
+                                menuOpened = p.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            }
+                        }
+                        if (!menuOpened) {
+                            // Safe coordinate tap fallback: tap right at the top-right corner edge (bounds.right - 6, bounds.top + 6),
+                            // which is outside the popup menu's bounds [353, 133][1063, 265]
+                            val bounds = android.graphics.Rect()
+                            m.getBoundsInScreen(bounds)
+                            if (bounds.width() > 0 && bounds.height() > 0) {
+                                menuOpened = tapAtAbsoluteCoordinates((bounds.right - 6).toFloat(), (bounds.top + 6).toFloat())
+                            }
+                        }
+                        if (menuOpened) break
+                    }
+                }
+                if (!menuOpened) {
+                    val menuCandidates = mutableListOf<AccessibilityNodeInfo>()
+                    for (r in getAllRoots()) {
+                        collectMatches(r, listOf("manage open tabs", "more options"), "new tab", menuCandidates)
+                    }
+                    for (c in menuCandidates) {
+                        if (c.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                            menuOpened = true
+                            break
+                        }
+                    }
+                }
+                Thread.sleep(450)
+
+                // Step 3: Tap "Close all tabs" or "Close all Incognito tabs"
+                var closed = false
+                val closeNodes = mutableListOf<AccessibilityNodeInfo>()
+                for (r in getAllRoots()) {
+                    collectByResourceId(r, "close_all_tabs_menu_id", closeNodes)
+                    collectByResourceId(r, "close_all_incognito_tabs_menu_id", closeNodes)
+                }
+                for (c in closeNodes) {
+                    closed = c.performAction(AccessibilityNodeInfo.ACTION_CLICK) || tapNodeCenter(c)
+                    if (closed) break
+                }
+                if (!closed) {
+                    val closeCandidates = mutableListOf<AccessibilityNodeInfo>()
+                    for (r in getAllRoots()) {
+                        collectMatches(r, listOf("close all tabs", "close all incognito", "close all tabs and groups", "close all"), "new tab", closeCandidates)
+                    }
+                    for (c in closeCandidates) {
+                        val text = (c.text?.toString() ?: c.contentDescription?.toString() ?: "").lowercase()
+                        if (!text.contains("new tab") && text.contains("close all")) {
+                            closed = c.performAction(AccessibilityNodeInfo.ACTION_CLICK) || tapNodeCenter(c)
+                            if (closed) break
+                        }
+                    }
+                }
+
+                // Step 4: Confirm in modal dialog ("Close all tabs and groups" / "Close all tabs")
+                if (closed) {
+                    Thread.sleep(500)
+                    val posButtons = mutableListOf<AccessibilityNodeInfo>()
+                    for (r in getAllRoots()) {
+                        collectByResourceId(r, "positive_button", posButtons)
+                    }
+                    for (b in posButtons) {
+                        b.performAction(AccessibilityNodeInfo.ACTION_CLICK) || tapNodeCenter(b)
+                    }
+                    val confirmCandidates = mutableListOf<AccessibilityNodeInfo>()
+                    for (r in getAllRoots()) {
+                        collectMatches(r, listOf("close all tabs and groups", "close all tabs", "close all"), "cancel", confirmCandidates)
+                    }
+                    for (b in confirmCandidates) {
+                        b.performAction(AccessibilityNodeInfo.ACTION_CLICK) || tapNodeCenter(b)
+                    }
+                    Thread.sleep(400)
+                    return true
+                }
+
+                return false
+            }
+
+            // Close active tab set
+            val activeClosed = closeActiveTabSet()
+
+            // Check if user also had tabs in the other mode (e.g. Incognito vs Standard tabs)
+            try {
+                val roots = getAllRoots()
+                for (r in roots) {
+                    val candidates = mutableListOf<AccessibilityNodeInfo>()
+                    collectMatches(r, listOf("standard tab", "incognito tab"), null, candidates)
+                    val otherPane = candidates.find { node ->
+                        val desc = (node.contentDescription?.toString() ?: "").lowercase()
+                        !node.isSelected && (desc.contains("standard tab") || desc.contains("incognito tab"))
+                    }
+                    if (otherPane != null) {
+                        Log.i(TAG, "closeChromeAllTabs: switching to secondary tab pane")
+                        if (otherPane.performAction(AccessibilityNodeInfo.ACTION_CLICK) || tapNodeCenter(otherPane)) {
+                            Thread.sleep(600)
+                            closeActiveTabSet()
+                        }
+                        break
+                    }
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "closeChromeAllTabs secondary pane check non-fatal", e)
+            }
+
+            return true
+        } catch (e: Exception) {
+            Log.w(TAG, "closeChromeAllTabs failed", e)
+            return false
+        }
+    }
+
+    /**
+     * Reads the visible text content of the currently active Chrome webpage.
+     * Collects all non-UI text from the web content area.
+     */
+    fun readChromeWebpageContent(): String {
+        val root = rootInActiveWindow ?: return ""
+        val textParts = mutableListOf<String>()
+        collectWebpageText(root, textParts)
+        return textParts.joinToString(" ").take(4000) // Limit to 4000 chars for Gemini context
+    }
+
+    private fun collectWebpageText(node: AccessibilityNodeInfo, out: MutableList<String>) {
+        val viewId = node.viewIdResourceName?.lowercase() ?: ""
+        val cls = node.className?.toString() ?: ""
+
+        // Skip Chrome UI elements (toolbar, URL bar, tabs)
+        if (viewId.contains("url_bar") || viewId.contains("toolbar") ||
+            viewId.contains("tab_") || viewId.contains("menu_button") ||
+            cls.contains("EditText") || cls.contains("AutoCompleteTextView")) {
+            return
+        }
+
+        // Collect text from content nodes
+        val text = node.text?.toString()?.trim() ?: ""
+        if (text.isNotBlank() && text.length > 2) {
+            out.add(text)
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectWebpageText(child, out)
+        }
+    }
+
+    /** Taps Chrome's 3-dot menu button by resource ID fallback. */
+    private fun tapChromeMenuButton(): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        collectByResourceId(root, "menu_button", candidates)
+        collectByResourceId(root, "menu_anchor", candidates)
+        for (c in candidates) {
+            if (tapNodeOrParent(c)) return true
+        }
+        return false
+    }
+
+    // ---------------------------------------------------------------
+    // YOUTUBE AUTO AD SKIPPER
+    // Continuously monitors for "Skip Ad" / "Skip Ads" button and
+    // auto-taps it when it appears.
+    // ---------------------------------------------------------------
+
+    @Volatile private var isAdSkipperActive = false
+
+    /**
+     * Starts a background loop that monitors for YouTube "Skip Ad" button
+     * and auto-taps it. Runs until stopYouTubeAdSkipper() is called.
+     */
+    fun startYouTubeAdSkipper() {
+        if (isAdSkipperActive) return
+        isAdSkipperActive = true
+        Log.i(TAG, "YouTube Ad Skipper started")
+
+        serviceScope.launch(Dispatchers.Default) {
+            while (isAdSkipperActive) {
+                try {
+                    val skipped = skipAd()
+                    if (skipped) {
+                        Log.d(TAG, "Auto-skipped YouTube ad")
+                    }
+                } catch (_: Exception) {}
+                delay(1500) // Check every 1.5 seconds
+            }
+        }
+    }
+
+    fun stopYouTubeAdSkipper() {
+        isAdSkipperActive = false
+        Log.i(TAG, "YouTube Ad Skipper stopped")
+    }
+
+    // ---------------------------------------------------------------
+    // WHATSAPP CHAT OPENER
+    // Opens a specific contact's chat in WhatsApp by navigating
+    // the contact list.
+    // ---------------------------------------------------------------
+
+    /**
+     * Opens a specific contact's chat in WhatsApp.
+     * Launches WhatsApp, taps the search icon, types the contact name,
+     * and taps the matching result.
+     */
+    fun openWhatsAppChat(contactName: String, appNumber: Int? = null): Boolean {
+        if (contactName.isBlank()) return false
+        try {
+            // Determine WhatsApp package
+            val packages = mutableListOf("com.whatsapp")
+            try {
+                applicationContext.packageManager.getPackageInfo("com.whatsapp.w4b", 0)
+                packages.add("com.whatsapp.w4b")
+            } catch (_: Exception) {}
+
+            val targetPkg = if (appNumber != null && appNumber == 2 && packages.size > 1) {
+                packages[1]
+            } else {
+                packages[0]
+            }
+
+            // Launch WhatsApp
+            val intent = applicationContext.packageManager.getLaunchIntentForPackage(targetPkg)
+            if (intent != null) {
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                applicationContext.startActivity(intent)
+            } else return false
+
+            Thread.sleep(1200)
+
+            // Tap search icon
+            val searchTapped = clickNodeMatching("search") ||
+                run {
+                    val root = rootInActiveWindow ?: return@run false
+                    val candidates = mutableListOf<AccessibilityNodeInfo>()
+                    collectByResourceId(root, "menuitem_search", candidates)
+                    collectByResourceId(root, "search_btn", candidates)
+                    candidates.firstOrNull()?.let { tapNodeOrParent(it) } ?: false
+                }
+
+            if (!searchTapped) return false
+            Thread.sleep(500)
+
+            // Type contact name in search field
+            typeText(contactName)
+            Thread.sleep(800)
+
+            // Tap the matching contact result
+            val root = rootInActiveWindow ?: return false
+            val contactNodes = mutableListOf<AccessibilityNodeInfo>()
+            collectAllNodesWithText(root, contactName.lowercase(), contactNodes)
+
+            // Filter out search input fields and find the actual contact row
+            for (node in contactNodes) {
+                val cls = node.className?.toString() ?: ""
+                val viewId = node.viewIdResourceName?.lowercase() ?: ""
+                if (cls.contains("EditText") || viewId.contains("search")) continue
+                if (tapNodeOrParent(node)) return true
+            }
+
+            return false
+        } catch (e: Exception) {
+            Log.w(TAG, "openWhatsAppChat failed", e)
+            return false
+        }
+    }
+
+}

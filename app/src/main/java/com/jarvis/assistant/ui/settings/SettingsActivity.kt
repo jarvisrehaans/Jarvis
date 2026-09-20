@@ -174,7 +174,7 @@ class SettingsActivity : AppCompatActivity() {
 
         headerSettingsIcon.pressFeedback()
         headerSettingsIcon.setOnClickListener {
-            startActivity(Intent(this, WebsiteBuilderActivity::class.java))
+            showAdvancedSettingsDialog()
         }
 
         apiKeyVisibilityToggle.setOnClickListener {
@@ -520,6 +520,43 @@ class SettingsActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Log.e("SettingsActivity", "Error updating profile name", e)
         }
+    }
+
+    private fun showAdvancedSettingsDialog() {
+        val dialog = android.app.Dialog(this)
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+        dialog.setContentView(R.layout.dialog_advanced_settings)
+        dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
+        dialog.window?.setLayout(
+            (resources.displayMetrics.widthPixels * 0.90).toInt(),
+            android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+
+        val primaryColor = ThemeManager.getPrimaryColorInt(this)
+        dialog.findViewById<TextView>(R.id.dialogTitleText)?.setTextColor(primaryColor)
+        dialog.findViewById<ImageView>(R.id.notifReaderIcon)?.setColorFilter(primaryColor)
+        dialog.findViewById<ImageView>(R.id.webBuilderIcon)?.setColorFilter(primaryColor)
+
+        val switchNotifReader = dialog.findViewById<com.google.android.material.switchmaterial.SwitchMaterial>(R.id.switchNotificationReader)
+        val isEnabled = prefs().getBoolean("notification_reader_enabled", true)
+        switchNotifReader?.isChecked = isEnabled
+
+        switchNotifReader?.setOnCheckedChangeListener { _, isChecked ->
+            prefs().edit().putBoolean("notification_reader_enabled", isChecked).apply()
+            val stateText = if (isChecked) "ON (Enabled)" else "OFF (Disabled)"
+            android.widget.Toast.makeText(this, "Notification Reader: $stateText", android.widget.Toast.LENGTH_SHORT).show()
+        }
+
+        dialog.findViewById<View>(R.id.rowWebsiteBuilder)?.setOnClickListener {
+            dialog.dismiss()
+            startActivity(Intent(this, WebsiteBuilderActivity::class.java))
+        }
+
+        dialog.findViewById<View>(R.id.dialogCloseBtn)?.setOnClickListener {
+            dialog.dismiss()
+        }
+
+        dialog.show()
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()

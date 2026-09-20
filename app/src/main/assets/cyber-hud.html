@@ -595,6 +595,7 @@
         precision highp float;
         uniform float u_time;
         uniform float u_state;
+        uniform float u_amplitude;
         uniform vec2 u_resolution;
 
         void main() {
@@ -605,33 +606,37 @@
             float speed = 0.8;
 
             if (u_state < 0.5) { // Idle: Cool Deep Blue / Cyan
-                color1 = vec3(0.04, 0.12, 0.22);
-                color2 = vec3(0.10, 0.25, 0.40);
-                speed = 0.5;
+                color1 = vec3(0.04, 0.14, 0.28);
+                color2 = vec3(0.12, 0.32, 0.55);
+                speed = 0.7;
             } else if (u_state < 1.5) { // Listen: Electric Blue Rings
                 color1 = vec3(0.16, 0.47, 1.0); // #2979FF
                 color2 = vec3(0.0, 0.57, 0.92); // #0091EA
                 speed = 2.2;
-            } else if (u_state < 2.5) { // Think (swapped with Speak): Steady Steel Blue Pulse
+            } else if (u_state < 2.5) { // Think: Steady Steel Blue Pulse
                 color1 = vec3(0.25, 0.80, 1.0); // #40C4FF
                 color2 = vec3(0.16, 0.47, 1.0); // #2979FF
-                speed = 1.8;
-            } else { // Speak (swapped with Think): Dynamic Fast Resonant Arc Waves
-                color1 = vec3(0.0, 0.75, 1.0); // #00B0FF
-                color2 = vec3(0.0, 0.25, 0.65);
-                speed = 3.4;
+                speed = 2.0;
+            } else { // Speak: Dynamic Fast Resonant Arc Waves
+                color1 = vec3(0.0, 0.82, 1.0); // #00B0FF
+                color2 = vec3(0.10, 0.40, 0.85);
+                speed = 3.6;
             }
+
+            speed *= (1.0 + u_amplitude * 2.2);
 
             float f = 0.0;
             vec2 q = vec2(0.0);
-            q.x = sin(u_time * speed + uv.x * 3.0);
-            q.y = cos(u_time * speed + uv.y * 3.0);
-            f = sin(dist * 12.0 - u_time * speed * 4.0 + length(q) * 1.5);
+            q.x = sin(u_time * speed + uv.x * (3.0 + u_amplitude * 2.0));
+            q.y = cos(u_time * speed + uv.y * (3.0 + u_amplitude * 2.0));
+            f = sin(dist * (12.0 - u_amplitude * 2.5) - u_time * speed * 4.0 + length(q) * (1.5 + u_amplitude * 2.5));
             
             vec3 finalColor = mix(color1, color2, f * 0.5 + 0.5);
-            float alpha = smoothstep(0.88, 0.38, dist);
+            finalColor += vec3(0.15, 0.55, 1.0) * (u_amplitude * 0.8);
             
-            gl_FragColor = vec4(finalColor * alpha, alpha * 0.85);
+            float alpha = smoothstep(0.88 + u_amplitude * 0.08, 0.35, dist);
+            
+            gl_FragColor = vec4(finalColor * alpha, alpha * 0.90);
         }
     `;
 
@@ -659,6 +664,7 @@
 
         const timeLoc = gl.getUniformLocation(program, "u_time");
         const stateLoc = gl.getUniformLocation(program, "u_state");
+        const ampLoc = gl.getUniformLocation(program, "u_amplitude");
         const resLoc = gl.getUniformLocation(program, "u_resolution");
 
         window.currentState = 0;
@@ -672,8 +678,14 @@
                 gl.viewport(0, 0, width, height);
             }
 
+            const currentAmp = typeof smoothAmplitude !== 'undefined' ? smoothAmplitude : 0;
+            if (orbContainer) {
+                orbContainer.style.transform = `scale(${1.0 + currentAmp * 0.18})`;
+            }
+
             gl.uniform1f(timeLoc, time * 0.001);
             gl.uniform1f(stateLoc, window.currentState);
+            gl.uniform1f(ampLoc, currentAmp);
             gl.uniform2f(resLoc, canvas.width, canvas.height);
             gl.drawArrays(gl.TRIANGLES, 0, 6);
             requestAnimationFrame(renderOrb);

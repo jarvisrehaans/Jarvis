@@ -14,10 +14,16 @@ import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
 import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
 
 /**
  * Captures live screen frames using Android MediaProjection + VirtualDisplay + ImageReader
  * and compresses them to JPEG byte arrays at ~1 FPS for real-time Gemini Live vision input.
+ *
+ * CRASH FIX: On many Android GPU drivers (Adreno, Mali, Tensor), the ImageReader buffer's
+ * last row omits the trailing row-padding bytes. The old code called copyPixelsFromBuffer()
+ * which expects exactly (rowStride * height) bytes, throwing RuntimeException:
+ * "Buffer not large enough for pixels". The fix safely pads the buffer before copying.
  */
 class ScreenCaptureEngine(
     private val context: Context,
@@ -77,7 +83,7 @@ class ScreenCaptureEngine(
                 try {
                     val img = reader.acquireLatestImage() ?: reader.acquireNextImage()
                     img?.close()
-                } catch (_: Exception) {}
+                } catch (_: Throwable) {}
             }
         }, handler)
 
@@ -98,6 +104,19 @@ class ScreenCaptureEngine(
         Log.d(TAG, "ScreenCaptureEngine live vision stream started at ${width}x${height} (~1 FPS)")
     }
 
+    /**
+     * Safely processes the next screen frame from ImageReader.
+     *
+     * GPU BUFFER SAFETY: Android GPU drivers write pixel data with a rowStride that may
+     * exceed (pixelStride * width) due to hardware alignment. However, the ByteBuffer
+     * returned by Image.Plane often contains FEWER bytes than (rowStride * height) because
+     * the GPU omits trailing padding on the last row. Calling copyPixelsFromBuffer() on a
+     * bitmap sized to rowStride width causes "Buffer not large enough for pixels" crash.
+     *
+     * FIX: We create the bitmap at exact image.width (NOT rowStride width), then manually
+     * copy each row's valid pixel data (pixelStride * width bytes) into a clean buffer,
+     * skipping the per-row padding. This guarantees zero buffer overflow on ALL GPU drivers.
+     */
     private fun processNextFrame(reader: ImageReader) {
         var image: Image? = null
         isProcessingFrame = true
@@ -107,33 +126,62 @@ class ScreenCaptureEngine(
             val buffer = planes[0].buffer
             val pixelStride = planes[0].pixelStride
             val rowStride = planes[0].rowStride
-            val rowPadding = rowStride - pixelStride * image.width
+            val imgWidth = image.width
+            val imgHeight = image.height
 
-            val bitmap = Bitmap.createBitmap(
-                image.width + rowPadding / pixelStride,
-                image.height,
-                Bitmap.Config.ARGB_8888
-            )
-            bitmap.copyPixelsFromBuffer(buffer)
+            // Valid pixel bytes per row (excluding GPU alignment padding)
+            val validRowBytes = pixelStride * imgWidth
+            val rowPadding = rowStride - validRowBytes
 
-            val croppedBitmap = if (rowPadding > 0) {
-                Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
+            val bitmap: Bitmap
+            if (rowPadding == 0) {
+                // No padding — buffer is tightly packed, safe to copy directly
+                bitmap = Bitmap.createBitmap(imgWidth, imgHeight, Bitmap.Config.ARGB_8888)
+                // Guard: ensure buffer has enough data before copying
+                val requiredBytes = imgWidth * imgHeight * 4 // ARGB_8888 = 4 bytes/pixel
+                if (buffer.remaining() >= requiredBytes) {
+                    bitmap.copyPixelsFromBuffer(buffer)
+                } else {
+                    // Insufficient buffer data — skip this frame silently
+                    bitmap.recycle()
+                    return
+                }
             } else {
-                bitmap
+                // Row padding present — copy row-by-row into a clean, tightly-packed buffer
+                // to avoid "Buffer not large enough for pixels" crash
+                val cleanBuffer = ByteBuffer.allocateDirect(validRowBytes * imgHeight)
+                for (row in 0 until imgHeight) {
+                    val srcOffset = row * rowStride
+                    // Guard: don't read beyond the actual GPU buffer
+                    if (srcOffset + validRowBytes > buffer.capacity()) break
+                    buffer.position(srcOffset)
+                    buffer.limit(srcOffset + validRowBytes)
+                    cleanBuffer.put(buffer)
+                }
+                cleanBuffer.rewind()
+
+                bitmap = Bitmap.createBitmap(imgWidth, imgHeight, Bitmap.Config.ARGB_8888)
+                if (cleanBuffer.remaining() >= imgWidth * imgHeight * 4) {
+                    bitmap.copyPixelsFromBuffer(cleanBuffer)
+                } else {
+                    bitmap.recycle()
+                    return
+                }
             }
 
             val baos = ByteArrayOutputStream()
-            croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 35, baos)
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 35, baos)
             val jpegBytes = baos.toByteArray()
-
-            if (croppedBitmap != bitmap) croppedBitmap.recycle()
             bitmap.recycle()
 
             onFrameCaptured(jpegBytes)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error processing screen frame", e)
+        } catch (e: Throwable) {
+            // Catch ALL throwables including OutOfMemoryError, RuntimeException from
+            // graphics drivers, and IllegalStateException from buffer queue exhaustion.
+            // A dropped frame is harmless — a crash is not.
+            Log.e(TAG, "Error processing screen frame (safely dropped)", e)
         } finally {
-            image?.close()
+            try { image?.close() } catch (_: Throwable) {}
             isProcessingFrame = false
         }
     }
@@ -151,7 +199,7 @@ class ScreenCaptureEngine(
             handlerThread = null
             handler = null
             mediaProjection.stop()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Error stopping ScreenCaptureEngine", e)
         }
         Log.d(TAG, "ScreenCaptureEngine stopped")

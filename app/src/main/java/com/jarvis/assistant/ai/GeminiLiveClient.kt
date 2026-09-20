@@ -976,6 +976,192 @@ class GeminiLiveClient(
                                 put("properties", JSONObject())
                             })
                         })
+                        // ---- CHROME SMART BROWSER AUTOMATION ----
+                        put(JSONObject().apply {
+                            put("name", "chrome_action")
+                            put("description",
+                                "Performs Chrome browser automation actions: 'incognito' (open new incognito tab), 'close_all_tabs' (close all tabs), " +
+                                "'read_page' (read visible webpage text content for AI analysis), 'summarize_page' (read page and summarize). " +
+                                "E.g. 'open incognito tab', 'close all Chrome tabs', 'read this page', 'summarize this website'.")
+                            put("parameters", JSONObject().apply {
+                                put("type", "OBJECT")
+                                put("properties", JSONObject().apply {
+                                    put("action", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("enum", JSONArray().apply {
+                                            put("incognito"); put("close_all_tabs"); put("read_page"); put("summarize_page")
+                                        })
+                                    })
+                                })
+                                put("required", JSONArray().put("action"))
+                            })
+                        })
+                        // ---- YOUTUBE AUTO AD SKIPPER ----
+                        put(JSONObject().apply {
+                            put("name", "youtube_auto_ad_skip")
+                            put("description",
+                                "Starts or stops the YouTube auto ad-skipper that automatically taps 'Skip Ad' whenever it appears. " +
+                                "E.g. 'start ad skipper', 'skip ads automatically', 'stop ad skipper'.")
+                            put("parameters", JSONObject().apply {
+                                put("type", "OBJECT")
+                                put("properties", JSONObject().apply {
+                                    put("action", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("enum", JSONArray().apply { put("start"); put("stop") })
+                                    })
+                                })
+                                put("required", JSONArray().put("action"))
+                            })
+                        })
+                        // ---- WHATSAPP OPEN CHAT ----
+                        put(JSONObject().apply {
+                            put("name", "open_whatsapp_chat")
+                            put("description",
+                                "Opens a specific contact's WhatsApp chat by navigating to WhatsApp, searching for the contact name, and opening their chat. " +
+                                "Use when user says 'open Bharath chat on WhatsApp', 'WhatsApp pe Rahul ka chat kholo'. " +
+                                "IMPORTANT: Always confirm the contact name with the user before opening.")
+                            put("parameters", JSONObject().apply {
+                                put("type", "OBJECT")
+                                put("properties", JSONObject().apply {
+                                    put("contact_name", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("description", "Contact name whose WhatsApp chat to open (as saved in contacts).")
+                                    })
+                                    put("app_number", JSONObject().apply {
+                                        put("type", "INTEGER")
+                                        put("description", "Optional 1 or 2 for dual WhatsApp.")
+                                    })
+                                    put("confirmed", JSONObject().apply {
+                                        put("type", "BOOLEAN")
+                                        put("description", "Set to true ONLY after user confirms the contact name.")
+                                    })
+                                })
+                                put("required", JSONArray().apply { put("contact_name") })
+                            })
+                        })
+                        // ---- WHATSAPP DIRECT REPLY ----
+                        put(JSONObject().apply {
+                            put("name", "reply_whatsapp_notification")
+                            put("description",
+                                "Directly sends a background reply to the latest incoming WhatsApp notification without waking screen or opening WhatsApp. " +
+                                "Use when user responds to an incoming WhatsApp notification event (e.g. 'reply I am on my way', 'bol do I am busy', 'reply haan theek hai').")
+                            put("parameters", JSONObject().apply {
+                                put("type", "OBJECT")
+                                put("properties", JSONObject().apply {
+                                    put("message", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("description", "The reply message content to send.")
+                                    })
+                                })
+                                put("required", JSONArray().apply { put("message") })
+                            })
+                        })
+                        // ---- PRODUCTIVITY: VOICE NOTES ----
+                        put(JSONObject().apply {
+                            put("name", "save_note")
+                            put("description",
+                                "Saves, lists, or deletes voice notes. E.g. 'save a note: buy groceries', 'note likho: meeting at 3pm', 'mere notes sunao', 'what are my notes', 'list notes', 'delete note 1'.")
+                            put("parameters", JSONObject().apply {
+                                put("type", "OBJECT")
+                                put("properties", JSONObject().apply {
+                                    put("action", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("enum", JSONArray().apply { put("save"); put("list"); put("delete") })
+                                        put("description", "'save' to add a note, 'list' to show all notes, 'delete' to delete by number.")
+                                    })
+                                    put("content", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("description", "The note content to save.")
+                                    })
+                                    put("note_number", JSONObject().apply {
+                                        put("type", "INTEGER")
+                                        put("description", "Note number to delete (1-based).")
+                                    })
+                                })
+                                put("required", JSONArray().put("action"))
+                            })
+                        })
+                        // ---- PRODUCTIVITY: TODO LIST ----
+                        put(JSONObject().apply {
+                            put("name", "manage_todo")
+                            put("description",
+                                "Manages the user's to-do list. Actions: 'add' (add new task), 'list' (show all todos), 'complete' (mark as done by number), 'remove' (delete by number). " +
+                                "E.g. 'add to-do: buy milk', 'show my todos', 'mark todo 2 as done', 'remove todo 3'.")
+                            put("parameters", JSONObject().apply {
+                                put("type", "OBJECT")
+                                put("properties", JSONObject().apply {
+                                    put("action", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("enum", JSONArray().apply { put("add"); put("list"); put("complete"); put("remove") })
+                                    })
+                                    put("task", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("description", "Task description when adding.")
+                                    })
+                                    put("item_number", JSONObject().apply {
+                                        put("type", "INTEGER")
+                                        put("description", "Item number for complete/remove actions.")
+                                    })
+                                })
+                                put("required", JSONArray().put("action"))
+                            })
+                        })
+                        // ---- PRODUCTIVITY: CLIPBOARD AI ----
+                        put(JSONObject().apply {
+                            put("name", "manage_clipboard")
+                            put("description",
+                                "Reads from or writes to the device clipboard. Actions: 'read' (read clipboard content), 'write' (copy text to clipboard). " +
+                                "E.g. 'read my clipboard', 'what is in my clipboard', 'copy this to clipboard: hello world'.")
+                            put("parameters", JSONObject().apply {
+                                put("type", "OBJECT")
+                                put("properties", JSONObject().apply {
+                                    put("action", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("enum", JSONArray().apply { put("read"); put("write") })
+                                    })
+                                    put("text", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("description", "Text to copy to clipboard (for 'write' action).")
+                                    })
+                                })
+                                put("required", JSONArray().put("action"))
+                            })
+                        })
+                        // ---- PRODUCTIVITY: DAILY BRIEFING ----
+                        put(JSONObject().apply {
+                            put("name", "daily_briefing")
+                            put("description",
+                                "Provides a daily briefing with today's date, time, calendar events, and pending to-dos. " +
+                                "E.g. 'give me my daily briefing', 'what's my schedule today', 'aaj ka plan batao', 'morning briefing'.")
+                            put("parameters", JSONObject().apply {
+                                put("type", "OBJECT")
+                                put("properties", JSONObject())
+                            })
+                        })
+                        // ---- PRODUCTIVITY: CALENDAR EVENT ----
+                        put(JSONObject().apply {
+                            put("name", "create_calendar_event")
+                            put("description",
+                                "Creates a calendar event on device. E.g. 'create a meeting event tomorrow at 3pm', 'add calendar event: dentist appointment'.")
+                            put("parameters", JSONObject().apply {
+                                put("type", "OBJECT")
+                                put("properties", JSONObject().apply {
+                                    put("title", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("description", "Event title.")
+                                    })
+                                    put("description", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("description", "Optional event description.")
+                                    })
+                                    put("duration_minutes", JSONObject().apply {
+                                        put("type", "INTEGER")
+                                        put("description", "Event duration in minutes (default 60).")
+                                    })
+                                })
+                                put("required", JSONArray().put("title"))
+                            })
+                        })
                         put(JSONObject().apply {
                             put("name", "shutdown_jarvis")
                             put("description",
