@@ -93,16 +93,12 @@ class JarvisVoiceService : Service() {
         // Standalone "jarvis" or standalone "hey" are NEVER allowed.
         private val WAKE_PHRASES = listOf(
             "hey jarvis", "hello jarvis", "hi jarvis", "wake jarvis", "wake up jarvis",
-            "hey javis", "hello javis", "hi javis", "wake javis", "wake up javis",
-            "hey jervis", "hello jervis", "hi jervis", "wake jervis", "wake up jervis",
-            "hey jarves", "hello jarves", "hi jarves", "wake jarves", "wake up jarves",
-            "hey jarviz", "hello jarviz", "hi jarviz", "wake jarviz", "wake up jarviz",
             "हे जार्विस", "हेलो जार्विस", "हाय जार्विस", "जागो जार्विस", "वेक अप जार्विस"
         )
 
         private const val IDLE_TO_SLEEP_MS = 120_000L  // 2 minutes of silence -> auto-sleep
-        private const val FOLLOW_UP_WINDOW_MS = 45_000L // 45s follow-up window after speech/turn
-        private const val BACKGROUND_AUTO_STANDBY_MS = 120_000L // 2 minutes auto-standby window in background
+        private const val FOLLOW_UP_WINDOW_MS = 10_000L // 10s follow-up window after speech/turn
+        private const val BACKGROUND_AUTO_STANDBY_MS = 12_000L // 12s auto-standby window in background
         @Volatile var instance: JarvisVoiceService? = null
     }
 
@@ -321,21 +317,25 @@ class JarvisVoiceService : Service() {
         return synchronized(this) {
             if (voskRecognizer != null) return@synchronized voskRecognizer
             try {
-                // Kaldi dynamic constrained grammar.
-                // Restricting the search space to wake phrases and phonetics forces Kaldi's acoustic
-                // decoder to match wake words with high probability instead of wandering into 50k dictionary words.
+                // Kaldi dynamic constrained grammar with comprehensive distractor vocabulary.
+                // Including common conversational, television, and phonetic distractor words prevents
+                // Kaldi from forcibly aligning non-wake speech/TV dialogue into wake words.
                 val grammar = """[
                     "hey jarvis", "hello jarvis", "hi jarvis", "wake jarvis", "wake up jarvis",
-                    "hey javis", "hello javis", "hi javis", "wake javis", "wake up javis",
-                    "hey jervis", "hello jervis", "hi jervis", "wake jervis", "wake up jervis",
-                    "hey jarves", "hello jarves", "hi jarves", "wake jarves", "wake up jarves",
-                    "hey jarviz", "hello jarviz", "hi jarviz", "wake jarviz", "wake up jarviz",
-                    "hello", "hey", "hi", "wake", "up", "yes", "no", "stop", "wait", "please", "okay",
+                    "the", "be", "to", "of", "and", "a", "in", "that", "have", "i", "it", "for", "not", "on", "with", "he", "as", "you", "do", "at",
+                    "this", "but", "his", "by", "from", "they", "we", "say", "her", "she", "or", "an", "will", "my", "one", "all", "would", "there",
+                    "their", "what", "so", "up", "out", "if", "about", "who", "get", "which", "go", "me", "when", "make", "can", "like", "time", "no",
+                    "just", "him", "know", "take", "people", "into", "year", "your", "good", "some", "could", "them", "see", "other", "than", "then",
+                    "now", "look", "only", "come", "its", "over", "think", "also", "back", "after", "use", "two", "how", "our", "work", "first",
+                    "well", "way", "even", "new", "want", "because", "any", "these", "give", "day", "most", "us", "service", "notice", "device",
+                    "devices", "nervous", "news", "video", "music", "movie", "channel", "tv", "phone", "call", "tell", "said", "world", "yes",
+                    "stop", "wait", "please", "okay", "sure", "right", "yeah", "check", "play", "open", "start", "help", "thank", "thanks", "tonight",
+                    "today", "great", "guys", "everyone", "bhai", "hai", "karo", "karna", "kya", "nahi", "aur", "yeh", "woh", "chup", "band", "suno",
                     "[unk]"
                 ]""".trimIndent()
                 val rec = Recognizer(model, 16000.0f, grammar)
                 voskRecognizer = rec
-                Log.i("JarvisVoiceService", "Direct Vosk continuous Recognizer initialized with strict wake grammar")
+                Log.i("JarvisVoiceService", "Direct Vosk continuous Recognizer initialized with strict wake grammar and distractors")
                 rec
             } catch (e: Exception) {
                 Log.e("JarvisVoiceService", "Failed to create Vosk Recognizer: ${e.message}", e)
@@ -348,7 +348,12 @@ class JarvisVoiceService : Service() {
         if (!_isStandby.value) return
         if (System.currentTimeMillis() - standbyActivatedTime < STANDBY_COOLDOWN_MS) return
 
-        // Maintain rolling pre-roll buffer so words spoken during or immediately after the wake word are never dropped
+        // Energy threshold: quiet background murmurs or distant TV dialogue (< 0.018f RMS)
+        // are discarded immediately, saving CPU and preventing low-volume ambient triggers.
+        val rms = audioEngine?.calculateRms(chunk) ?: 0f
+        if (rms < 0.018f) return
+
+        // Maintain rolling pre-roll buffer so words spoken during/immediately after wake word are kept
         while (wakePreRollBuffer.size >= WAKE_PRE_ROLL_MAX_CHUNKS) {
             wakePreRollBuffer.poll()
         }
@@ -356,12 +361,10 @@ class JarvisVoiceService : Service() {
 
         val rec = prepareVoskRecognizer() ?: return
         try {
+            // STRICT: Only evaluate completed utterances endpointed by Kaldi.
+            // Partial hypotheses fluctuate 25x/sec on ambient noise and are NEVER allowed to trigger standby wake.
             if (rec.acceptWaveForm(chunk, chunk.size)) {
                 checkVoskHypothesis(rec.result)
-            } else {
-                // Check partial hypothesis so detection is instant even in normal ambient noise
-                // where background audio (fan, TV, room noise) prevents silence endpointing.
-                checkVoskPartialHypothesis(rec.partialResult)
             }
         } catch (e: Exception) {
             Log.e("JarvisVoiceService", "Error in feedStandbyAudioChunk: ${e.message}")
@@ -389,41 +392,26 @@ class JarvisVoiceService : Service() {
         }
     }
 
-    private fun checkVoskPartialHypothesis(partialJson: String?) {
-        if (partialJson.isNullOrBlank() || !_isStandby.value) return
-        if (System.currentTimeMillis() - standbyActivatedTime < STANDBY_COOLDOWN_MS) return
-
-        try {
-            val json = JSONObject(partialJson)
-            val partial = json.optString("partial", "")
-            val clean = partial.trim().lowercase(Locale.ROOT)
-            if (clean.isEmpty() || clean == "[unk]") return
-
-            // Partial must contain at least 2 words to avoid any 1-word ambient noise trigger
-            if (!clean.contains(' ')) return
-
-            Log.d("JarvisVoiceService", "Vosk standby partial: '$clean'")
-            if (containsStandbyWakeWord(clean)) {
-                Log.i("JarvisVoiceService", "Vosk confirmed strict wake word (partial): '$clean'")
-                try { voskRecognizer?.reset() } catch (_: Exception) {}
-                onWakeWordDetected()
-            }
-        } catch (e: Exception) {
-            Log.e("JarvisVoiceService", "Error in checkVoskPartialHypothesis: ${e.message}")
-        }
-    }
-
     // STRICT: Only "hey jarvis", "hello jarvis", "hi jarvis", "wake jarvis", "wake up jarvis".
-    // Standalone single words ("jarvis", "hey", "hi", "hello", "wake") NEVER match.
+    // Must start with the wake phrase. Loose phonetics ("javis", "jervis", "jarves") are excluded.
     private val STANDBY_WAKE_REGEX = Regex(
-        """\b(hey|hello|hi|wake\s+up|wake)\s+(jarvis|javis|jervis|jarves|jarviz|zarvis)\b""",
+        """^(hey|hello|hi|wake\s+up|wake)\s+jarvis(\b.*)?$""",
+        RegexOption.IGNORE_CASE
+    )
+    private val HINDI_STANDBY_WAKE_REGEX = Regex(
+        """^(हे|हेलो|हाय|जागो|वेक\s+अप)\s+जार्विस(\b.*)?$""",
         RegexOption.IGNORE_CASE
     )
 
     private fun containsStandbyWakeWord(phrase: String): Boolean {
         val clean = phrase.lowercase(Locale.ROOT).trim()
         if (clean.isEmpty() || clean == "[unk]") return false
-        return STANDBY_WAKE_REGEX.containsMatchIn(clean)
+        return STANDBY_WAKE_REGEX.matches(clean) ||
+                HINDI_STANDBY_WAKE_REGEX.matches(clean) ||
+                clean == "hey jarvis" || clean == "hello jarvis" || clean == "hi jarvis" ||
+                clean == "wake jarvis" || clean == "wake up jarvis" ||
+                clean == "हे जार्विस" || clean == "हेलो जार्विस" || clean == "हाय जार्विस" ||
+                clean == "जागो जार्विस" || clean == "वेक अप जार्विस"
     }
 
     private fun exitStandbyListening() {
@@ -488,6 +476,12 @@ class JarvisVoiceService : Service() {
 
     private fun scheduleSmartWakeGreeting() {
         smartGreetingJob?.cancel()
+        // In background mode, do NOT speak an unprovoked greeting.
+        // The futuristic ascending wake chime already alerted the user that JARVIS is listening.
+        // Speaking a greeting in background invites TV/room audio to continue a conversation.
+        if (!isAppInForeground) {
+            return
+        }
         smartGreetingJob = toolScope.launch {
             // Wait 1600ms to see if user is speaking a command after the wake word
             delay(1600L)
@@ -615,7 +609,7 @@ class JarvisVoiceService : Service() {
         isInFollowUpWindow = true
         activeFollowUpJob?.cancel()
         activeFollowUpJob = toolScope.launch {
-            delay(FOLLOW_UP_WINDOW_MS)
+            delay(if (isAppInForeground) FOLLOW_UP_WINDOW_MS else 10_000L)
             isInFollowUpWindow = false
         }
         if (!isAppInForeground) {
@@ -631,15 +625,16 @@ class JarvisVoiceService : Service() {
         backgroundAutoStandbyJob = toolScope.launch {
             delay(delayMs)
             if (!isAppInForeground && conversationState == ConversationState.ACTIVE && !_isStandby.value) {
-                val now = System.currentTimeMillis()
-                val isRecentUserSpeech = (now - lastUserSpeechTimeMs) < 15_000L
-                val isRecentTurn = isInFollowUpWindow
                 val isSpeaking = audioEngine?.isCurrentlySpeaking() == true
-                if (isRecentUserSpeech || isRecentTurn || isSpeaking) {
-                    scheduleBackgroundAutoStandby(15_000L)
+                if (isSpeaking) {
+                    scheduleBackgroundAutoStandby(4_000L)
                     return@launch
                 }
-                Log.d("JarvisVoiceService", "Background silence timeout (${delayMs}ms) elapsed -> returning to standby")
+                if (isInFollowUpWindow) {
+                    scheduleBackgroundAutoStandby(4_000L)
+                    return@launch
+                }
+                Log.d("JarvisVoiceService", "Background timeout (${delayMs}ms) elapsed -> returning to standby")
                 enterStandby(sayGoodbye = false, playSound = false)
             }
         }
@@ -728,6 +723,11 @@ class JarvisVoiceService : Service() {
 
     private fun isVoicePlaybackAllowed(): Boolean {
         if (isInBackgroundStandby()) return false
+        // STRICT: When in background, only play voice aloud if the current turn had a verified wake word
+        // or the user is inside an active follow-up window. Never talk to ambient TV/room noise.
+        if (!isAppInForeground && !currentTurnHasWakeWord && !isInFollowUpWindow) {
+            return false
+        }
         return true
     }
 
@@ -776,11 +776,16 @@ class JarvisVoiceService : Service() {
         "open the app", "open jarvis app", "bring jarvis to front"
     )
 
+    private val CLOUD_WAKE_REGEX = Regex(
+        """\b(hey|hello|hi|wake\s+up|wake)\s+jarvis\b""",
+        RegexOption.IGNORE_CASE
+    )
+
     private fun textHasWakeWord(text: String): Boolean {
         val cleanText = text.lowercase().trim()
         if (cleanText.isEmpty()) return false
         // STRICT: ONLY multi-word wake phrases (hey jarvis, hello jarvis, hi jarvis, wake jarvis, wake up jarvis)
-        return STANDBY_WAKE_REGEX.containsMatchIn(cleanText) ||
+        return CLOUD_WAKE_REGEX.containsMatchIn(cleanText) ||
                 WAKE_PHRASES.any { cleanText.contains(it) }
     }
 

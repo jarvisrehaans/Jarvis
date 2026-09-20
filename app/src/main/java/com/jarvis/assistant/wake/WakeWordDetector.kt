@@ -29,9 +29,7 @@ class WakeWordDetector(private val context: Context) {
         private const val WAKE_LANGUAGE = "en-IN"
         private val WAKE_PHRASES = listOf(
             "hey jarvis", "hello jarvis", "hi jarvis", "wake jarvis", "wake up jarvis",
-            "hey javis", "hello javis", "hi javis", "wake javis", "wake up javis",
-            "hey jervis", "hello jervis", "hi jervis", "wake jervis", "wake up jervis",
-            "जार्विस सुनो", "जागो जार्विस"
+            "हे जार्विस", "हेलो जार्विस", "हाय जार्विस", "जागो जार्विस", "वेक अप जार्विस"
         )
         private const val RESTART_DELAY_BASE_MS = 250L
         private const val RESTART_DELAY_MAX_MS = 2000L

@@ -1,8 +1,8 @@
 {
-  "versionCode": 134,
-  "versionName": "1.7.8",
+  "versionCode": 135,
+  "versionName": "1.7.9",
   "apkName": "Jarvis-AI-Release.apk",
   "downloadUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
   "apkUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
-  "changelog": "⚡ What's New & Fixed in v1.7.8:\n\n• 🎯 Ultra-Strict Wake Word Spotting: Wake activation is now strictly restricted to 5 explicit multi-word phrases: 'Hey Jarvis', 'Hello Jarvis', 'Hi Jarvis', 'Wake Jarvis', and 'Wake Up Jarvis'. Standalone single words ('Jarvis', 'Hey', etc.) and ambient room noise will NEVER activate JARVIS.\n\n• 🛡️ Zero Automatic Activation: Eliminated all single-word token triggers, partial 1-word hallucination checks, and background notification spontaneous wakes.\n\n• 📱 Background & Lockscreen Action Execution: Apps, flashlights, and media controls execute reliably from the background.\n\n• ⚡ 0ms Hot-Standby & Continuous Hardware Mic: Instant hands-free conversation with zero mic indicator blinking."
+  "changelog": "⚡ What's New & Fixed in v1.7.9:\n\n• 🛡️ Complete Immunity to TV & Ambient Audio: Standby wake listening now requires finalized Viterbi endpointing and RMS energy gating (>= 0.018f), completely ignoring quiet background TV murmurs and partial fluctuations.\n\n• 🎯 Strict 5 Wake-Words Only: Absolutely zero loose phonetic matching ('javis', 'jervis', etc. removed). Added broad common-word distractor vocabulary to Vosk so TV speech is recognized as ordinary words rather than falsely forced into wake phrases.\n\n• 🔒 Background Voice Playback Guard: JARVIS is strictly prevented from playing speech aloud in the background unless the turn contains an explicit verified wake word or is within an active 10s command window.\n\n• ⏱️ Tight 12s Background Timeout: Standby mode returns automatically after 12s of inactivity without being perpetually extended by background TV noise."
 }
