@@ -55,17 +55,10 @@ object WhatsAppMessenger {
         }
 
         val targetContact = matches.first()
-        val rawNumber = targetContact.number.filter { it.isDigit() || it == '+' }
-        var phoneDigits = rawNumber.filter { it.isDigit() }
+        val phoneDigits = normalizePhoneNumber(targetContact.number)
 
         if (phoneDigits.isEmpty()) {
             return SendResult.Error("No valid phone number digits for ${targetContact.name}.")
-        }
-
-        if (phoneDigits.length == 10) {
-            phoneDigits = "91$phoneDigits"
-        } else if (phoneDigits.startsWith("0") && phoneDigits.length == 11) {
-            phoneDigits = "91" + phoneDigits.substring(1)
         }
 
         // 2. Check WhatsApp dual app availability
@@ -151,17 +144,10 @@ object WhatsAppMessenger {
         }
 
         val targetContact = matches.first()
-        val rawNumber = targetContact.number.filter { it.isDigit() || it == '+' }
-        var phoneDigits = rawNumber.filter { it.isDigit() }
+        val phoneDigits = normalizePhoneNumber(targetContact.number)
 
         if (phoneDigits.isEmpty()) {
             return CallResult.Error("No valid phone number digits for ${targetContact.name}.")
-        }
-
-        if (phoneDigits.length == 10) {
-            phoneDigits = "91$phoneDigits"
-        } else if (phoneDigits.startsWith("0") && phoneDigits.length == 11) {
-            phoneDigits = "91" + phoneDigits.substring(1)
         }
 
         // 2. Check WhatsApp dual app availability
@@ -279,13 +265,7 @@ object WhatsAppMessenger {
                 matches.first()
             }
 
-            val rawNumber = targetContact.number.filter { it.isDigit() || it == '+' }
-            var phoneDigits = rawNumber.filter { it.isDigit() }
-            if (phoneDigits.length == 10) {
-                phoneDigits = "91$phoneDigits"
-            } else if (phoneDigits.startsWith("0") && phoneDigits.length == 11) {
-                phoneDigits = "91" + phoneDigits.substring(1)
-            }
+            val phoneDigits = normalizePhoneNumber(targetContact.number)
 
             val appMatches = AppLauncher.findMatchingApps(context, "WhatsApp")
             val isDual = appMatches.size >= 2 || (appMatches.isNotEmpty() && AppLauncher.isDualAppEnabled(context, appMatches[0].packageName))
@@ -333,6 +313,39 @@ object WhatsAppMessenger {
         } else {
             SendResult.ContactNotFound(contactName)
         }
+    }
+
+    /**
+     * Normalizes a phone number for WhatsApp deep-linking.
+     * Preserves international country codes (starting with '+' or '00')
+     * and only applies fallback country prefix (91) if it is a standard 10-digit or 0-trunk local number.
+     */
+    fun normalizePhoneNumber(rawInput: String): String {
+        val trimmed = rawInput.trim()
+        val hasLeadingPlus = trimmed.startsWith("+")
+        val digits = trimmed.filter { it.isDigit() }
+
+        if (digits.isEmpty()) return ""
+
+        if (hasLeadingPlus) {
+            // Already includes international country code (e.g. +1..., +44..., +91...)
+            return digits
+        }
+
+        if (digits.startsWith("00")) {
+            // International dial prefix 00...
+            return digits.substring(2)
+        }
+
+        if (digits.length == 10) {
+            // Default 10-digit number without country code
+            return "91$digits"
+        } else if (digits.startsWith("0") && digits.length == 11) {
+            // Trunk prefix (e.g. 09876543210)
+            return "91" + digits.substring(1)
+        }
+
+        return digits
     }
 }
 

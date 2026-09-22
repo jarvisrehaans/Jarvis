@@ -50,6 +50,7 @@
         tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
     <application
         android:name=".JarvisApplication"
@@ -93,6 +94,7 @@
 
         <activity
             android:name=".ui.CrashRecoveryActivity"
+            android:process=":crash"
             android:exported="false"
             android:noHistory="true"
             android:excludeFromRecents="true"
@@ -163,7 +165,7 @@
         <service
             android:name=".service.FloatingOrbService"
             android:exported="false"
-            android:foregroundServiceType="specialUse|microphone">
+            android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Floating 3D Orb Home Screen HUD Widget" />

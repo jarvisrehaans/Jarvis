@@ -10,10 +10,11 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
-import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.provider.Settings
 import android.util.DisplayMetrics
 import android.util.Log
@@ -31,8 +32,7 @@ import com.jarvis.assistant.util.ThemeManager
 import kotlin.math.abs
 
 /**
- * System Overlay Service that renders a draggable, glowing 3D liquid fluid orb
- * widget floating over the Android Home Screen and all other applications.
+ * System Overlay Service that renders the classic 3D draggable liquid fluid orb.
  */
 class FloatingOrbService : Service() {
 
@@ -43,6 +43,9 @@ class FloatingOrbService : Service() {
 
         const val ACTION_START = "com.jarvis.assistant.action.START_FLOATING_ORB"
         const val ACTION_STOP = "com.jarvis.assistant.action.STOP_FLOATING_ORB"
+        const val ACTION_TRIGGER_VOICE = "com.jarvis.assistant.action.TRIGGER_VOICE"
+
+        const val STYLE_ORB = "orb"
 
         fun startService(context: Context) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
@@ -61,12 +64,20 @@ class FloatingOrbService : Service() {
             }
             context.startService(intent)
         }
+
+        fun reloadStyle(context: Context) {
+            // Kept for backward compatibility
+        }
     }
 
     private var windowManager: WindowManager? = null
-    private var overlayContainer: FrameLayout? = null
+
+    // Orb Overlay
+    private var orbContainer: FrameLayout? = null
     private var orbView: OrbAnimationView? = null
-    private var layoutParams: WindowManager.LayoutParams? = null
+    private var orbLayoutParams: WindowManager.LayoutParams? = null
+
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private var voiceService: JarvisVoiceService? = null
     private var isBoundToVoiceService = false
@@ -87,37 +98,61 @@ class FloatingOrbService : Service() {
 
     private val voiceListener = object : JarvisVoiceService.JarvisVoiceListener {
         override fun onConnected() {
-            updateOrbState(OrbAnimationView.OrbState.THINKING)
+            mainHandler.post {
+                updateOrbState(OrbAnimationView.OrbState.THINKING)
+            }
         }
 
         override fun onSetupComplete() {
-            updateOrbState(OrbAnimationView.OrbState.LISTENING)
+            mainHandler.post {
+                updateOrbState(OrbAnimationView.OrbState.LISTENING)
+            }
         }
 
         override fun onSpeakingStarted() {
-            updateOrbState(OrbAnimationView.OrbState.SPEAKING)
+            mainHandler.post {
+                updateOrbState(OrbAnimationView.OrbState.SPEAKING)
+            }
         }
 
         override fun onSpeakingStopped() {
-            updateOrbState(OrbAnimationView.OrbState.IDLE)
+            mainHandler.post {
+                updateOrbState(OrbAnimationView.OrbState.IDLE)
+            }
         }
 
         override fun onAmplitudeChanged(rms: Float) {
-            orbView?.post {
+            mainHandler.post {
                 orbView?.setAmplitude(rms * 1.5f)
             }
         }
 
         override fun onInputTranscript(text: String) {
-            updateOrbState(OrbAnimationView.OrbState.LISTENING)
+            mainHandler.post {
+                updateOrbState(OrbAnimationView.OrbState.LISTENING)
+            }
         }
 
         override fun onOutputTranscript(text: String) {
-            updateOrbState(OrbAnimationView.OrbState.SPEAKING)
+            mainHandler.post {
+                updateOrbState(OrbAnimationView.OrbState.SPEAKING)
+            }
         }
 
         override fun onTurnComplete() {
-            updateOrbState(OrbAnimationView.OrbState.IDLE)
+            mainHandler.post {
+                updateOrbState(OrbAnimationView.OrbState.IDLE)
+            }
+        }
+
+        override fun onStandbyStateChanged(isStandby: Boolean) {
+            mainHandler.post {
+                if (isStandby) {
+                    updateOrbState(OrbAnimationView.OrbState.IDLE)
+                } else {
+                    updateOrbState(OrbAnimationView.OrbState.LISTENING)
+                }
+            }
         }
 
         override fun onShutdownRequested() {
@@ -133,15 +168,25 @@ class FloatingOrbService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+
+        createNotificationChannel()
+        startForeground(NOTIFICATION_ID, createNotification())
+
         ThemeManager.addListener(themeListener)
-        setupOverlayWindow()
+        setupOrbWindow()
         bindVoiceService()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopSelf()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_TRIGGER_VOICE -> {
+                triggerVoiceAction()
+            }
         }
         return START_STICKY
     }
@@ -150,10 +195,10 @@ class FloatingOrbService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "JARVIS Floating Orb Overlay",
+                "JARVIS Floating Overlay",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Floating 3D Orb Home Screen HUD"
+                description = "JARVIS 3D Floating Orb Overlay"
                 setShowBadge(false)
             }
             val manager = getSystemService(NotificationManager::class.java)
@@ -169,8 +214,8 @@ class FloatingOrbService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("JARVIS Floating Orb Active")
-            .setContentText("Tap orb to speak or drag to move")
+            .setContentTitle("JARVIS 3D Floating Orb Active")
+            .setContentText("Tap orb to speak with JARVIS")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
@@ -178,19 +223,21 @@ class FloatingOrbService : Service() {
             .build()
     }
 
-    private fun setupOverlayWindow() {
+    // ==========================================
+    // 3D FLOATING ORB OVERLAY
+    // ==========================================
+
+    private fun setupOrbWindow() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-            Log.e(TAG, "Cannot setup overlay: SYSTEM_ALERT_WINDOW permission missing.")
-            stopSelf()
+            Log.e(TAG, "Cannot setup Orb overlay: SYSTEM_ALERT_WINDOW permission missing.")
             return
         }
 
-        windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
         windowManager?.defaultDisplay?.getMetrics(metrics)
 
         val density = resources.displayMetrics.density
-        val orbSizePx = (96 * density).toInt()
+        val orbSizePx = (72 * density).toInt()
 
         val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -199,21 +246,21 @@ class FloatingOrbService : Service() {
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
-        layoutParams = WindowManager.LayoutParams(
+        orbLayoutParams = WindowManager.LayoutParams(
             orbSizePx,
             orbSizePx,
             windowType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                     WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = metrics.widthPixels - orbSizePx - (16 * density).toInt()
+            x = metrics.widthPixels - orbSizePx - 24
             y = metrics.heightPixels / 3
         }
 
-        overlayContainer = FrameLayout(this).apply {
+        orbContainer = FrameLayout(this).apply {
             clipChildren = false
             clipToPadding = false
         }
@@ -226,26 +273,38 @@ class FloatingOrbService : Service() {
             setState(OrbAnimationView.OrbState.IDLE)
         }
 
-        overlayContainer?.addView(orbView)
-        setupTouchListener(metrics.widthPixels, orbSizePx)
+        orbContainer?.addView(orbView)
+        setupOrbTouchListener(metrics.widthPixels, orbSizePx)
 
         try {
-            windowManager?.addView(overlayContainer, layoutParams)
+            windowManager?.addView(orbContainer, orbLayoutParams)
             Log.d(TAG, "Floating Orb overlay successfully added to WindowManager.")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to add Floating Orb view: ${e.message}", e)
         }
     }
 
-    private fun setupTouchListener(screenWidth: Int, orbSizePx: Int) {
+    private fun removeOrbWindow() {
+        if (orbContainer != null && windowManager != null) {
+            try {
+                windowManager?.removeView(orbContainer)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error removing Orb overlay: ${e.message}")
+            }
+            orbContainer = null
+            orbView = null
+        }
+    }
+
+    private fun setupOrbTouchListener(screenWidth: Int, orbSizePx: Int) {
         var initialX = 0
         var initialY = 0
         var initialTouchX = 0f
         var initialTouchY = 0f
         var lastClickTime = 0L
 
-        overlayContainer?.setOnTouchListener { _, event ->
-            val params = layoutParams ?: return@setOnTouchListener false
+        orbContainer?.setOnTouchListener { _, event ->
+            val params = orbLayoutParams ?: return@setOnTouchListener false
 
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
@@ -258,7 +317,7 @@ class FloatingOrbService : Service() {
                 MotionEvent.ACTION_MOVE -> {
                     params.x = initialX + (event.rawX - initialTouchX).toInt()
                     params.y = initialY + (event.rawY - initialTouchY).toInt()
-                    windowManager?.updateViewLayout(overlayContainer, params)
+                    windowManager?.updateViewLayout(orbContainer, params)
                     true
                 }
                 MotionEvent.ACTION_UP -> {
@@ -266,24 +325,20 @@ class FloatingOrbService : Service() {
                     val deltaY = abs(event.rawY - initialTouchY)
 
                     if (deltaX < 12 && deltaY < 12) {
-                        // Single tap vs double tap detection
                         val now = System.currentTimeMillis()
                         if (now - lastClickTime < 300) {
-                            // Double tap: Launch main app
                             openMainActivity()
                         } else {
-                            // Single tap: Trigger voice interaction
                             triggerVoiceAction()
                         }
                         lastClickTime = now
                     } else {
-                        // Drag end: Magnetically snap to nearest screen edge (left or right)
                         val targetX = if (params.x + orbSizePx / 2 < screenWidth / 2) {
-                            16 // Snap to left edge
+                            16
                         } else {
-                            screenWidth - orbSizePx - 16 // Snap to right edge
+                            screenWidth - orbSizePx - 16
                         }
-                        animateSnapToEdge(params.x, targetX)
+                        animateOrbSnapToEdge(params.x, targetX)
                     }
                     true
                 }
@@ -292,14 +347,14 @@ class FloatingOrbService : Service() {
         }
     }
 
-    private fun animateSnapToEdge(startX: Int, endX: Int) {
+    private fun animateOrbSnapToEdge(startX: Int, endX: Int) {
         val animator = ValueAnimator.ofInt(startX, endX).apply {
             duration = 250L
             interpolator = DecelerateInterpolator()
             addUpdateListener { anim ->
-                val params = layoutParams ?: return@addUpdateListener
+                val params = orbLayoutParams ?: return@addUpdateListener
                 params.x = anim.animatedValue as Int
-                windowManager?.updateViewLayout(overlayContainer, params)
+                windowManager?.updateViewLayout(orbContainer, params)
             }
         }
         animator.start()
@@ -322,9 +377,7 @@ class FloatingOrbService : Service() {
     }
 
     private fun updateOrbState(state: OrbAnimationView.OrbState) {
-        orbView?.post {
-            orbView?.setState(state)
-        }
+        orbView?.setState(state)
     }
 
     private var isVoiceServiceBound = false
@@ -357,13 +410,7 @@ class FloatingOrbService : Service() {
         super.onDestroy()
         ThemeManager.removeListener(themeListener)
         unbindVoiceService()
-        if (overlayContainer != null && windowManager != null) {
-            try {
-                windowManager?.removeView(overlayContainer)
-            } catch (e: Exception) {
-                Log.e(TAG, "Error removing overlay view: ${e.message}")
-            }
-        }
+        removeOrbWindow()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

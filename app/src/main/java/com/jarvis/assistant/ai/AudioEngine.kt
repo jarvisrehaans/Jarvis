@@ -28,13 +28,13 @@ class AudioEngine(private val context: Context) {
         // Buffers an initial 100ms cushion so network bursts/jitter never cause AudioTrack underruns.
         private const val PREBUFFER_BYTES = 4800
 
-        // Debounce before declaring speech finished: 400ms absorbs normal network jitter
-        // gaps between Gemini WebSocket audio chunks without falsely chopping AudioTrack mid-sentence.
-        private const val SPEAK_STOP_DEBOUNCE_MS = 400L
+        // Debounce before declaring speech finished: 120ms absorbs normal network jitter
+        // gaps between Gemini WebSocket audio chunks without leaving mic suppressed for long.
+        private const val SPEAK_STOP_DEBOUNCE_MS = 120L
 
-        // Post-speech echo guard: 120ms (3 chunks) cleanly absorbs the room reverberation
+        // Post-speech echo guard: 40ms cleanly absorbs room reverberation
         // without eating the user's first words when they reply.
-        private const val ECHO_COOLDOWN_MS = 120L
+        private const val ECHO_COOLDOWN_MS = 40L
 
         // Grace period at the beginning of speech: 800ms protects turn onset from initial
         // speaker attack while allowing fast user interruption.

@@ -23,6 +23,7 @@ import com.jarvis.assistant.util.ThemeManager
 import com.jarvis.assistant.util.pressFeedback
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.UserProfileChangeRequest
+import com.jarvis.assistant.service.FloatingOrbService
 import android.util.Log
 
 class SettingsActivity : AppCompatActivity() {
@@ -467,9 +468,11 @@ class SettingsActivity : AppCompatActivity() {
         val newUserName = userNameInput.text.toString().trim()
         val newTheme = if (selectedThemeIndex == 1) ThemeManager.THEME_GOLD else ThemeManager.THEME_BLUE
         val homeStyleValue = if (selectedHomeStyleIndex == 1) "cyber_hud" else "classic"
-        val previousTheme = ThemeManager.getTheme(this)
 
         val selectedVoice = voiceValues.getOrNull(selectedVoiceIndex) ?: "Aoede"
+        val maleVoices = setOf("puck", "charon", "fenrir", "orus", "arvind", "amartya", "dev")
+        val isFemale = !maleVoices.contains(selectedVoice.lowercase().trim())
+
         prefs().edit().apply {
             putString("api_key", apiKeyInput.text.toString().trim())
             putString("user_name", newUserName)
@@ -477,14 +480,20 @@ class SettingsActivity : AppCompatActivity() {
             putString("gemini_model", geminiModelValues.getOrNull(selectedModelIndex) ?: defaultGeminiModel)
             putString("gemini_voice", selectedVoice)
             putString("cached_voice", selectedVoice)
+            putBoolean("is_female_voice", isFemale)
             putString("personality_mode", selectedPersonality)
             putString("home_screen_style", homeStyleValue)
             putString(ThemeManager.PREF_KEY_THEME, newTheme)
             apply()
         }
 
+        val newApiKey = apiKeyInput.text.toString().trim()
+        val newModel = geminiModelValues.getOrNull(selectedModelIndex) ?: defaultGeminiModel
+        val newPrompt = com.jarvis.assistant.util.PromptBuilder.buildSystemPrompt(newUserName, selectedPersonality, isFemale, selectedVoice)
+
         try {
             com.jarvis.assistant.service.JarvisVoiceService.instance?.updateVoice(selectedVoice)
+            com.jarvis.assistant.service.JarvisVoiceService.instance?.updateSessionConfig(newApiKey, newModel, selectedVoice, newPrompt)
         } catch (_: Exception) {}
 
         syncUserDataToFirebase(newUserName)

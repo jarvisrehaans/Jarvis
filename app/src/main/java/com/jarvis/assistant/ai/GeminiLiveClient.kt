@@ -161,7 +161,11 @@ class GeminiLiveClient(
                 }
 
                 onDisconnected?.invoke()
-                scheduleReconnect()
+                if (!isPermanentHttpError) {
+                    scheduleReconnect()
+                } else {
+                    Log.w(TAG, "Permanent HTTP ${response?.code} error encountered. Auto-reconnect paused until API key or configuration is updated.")
+                }
             }
         })
     }
@@ -1182,6 +1186,53 @@ class GeminiLiveClient(
                                 put("required", JSONArray().put("title"))
                             })
                         })
+                        // ---- PRODUCTIVITY: SMART MEMORY ----
+                        put(JSONObject().apply {
+                            put("name", "manage_memory")
+                            put("description",
+                                "Stores, retrieves, lists, or deletes permanent personal memories, facts, preferences, parking locations, and notes about the user (e.g. 'remember my car is parked at B-2', 'where did I park my car', 'my favorite food is pizza', 'what is my favorite food', 'forget my parking').")
+                            put("parameters", JSONObject().apply {
+                                put("type", "OBJECT")
+                                put("properties", JSONObject().apply {
+                                    put("action", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("enum", JSONArray().apply { put("save"); put("recall"); put("delete"); put("list") })
+                                        put("description", "'save' to store fact, 'recall' to retrieve, 'delete' to remove, 'list' to show all.")
+                                    })
+                                    put("key", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("description", "Topic or keyword (e.g. 'car_parking', 'favorite_coffee', 'mother_birthday', 'home_wifi').")
+                                    })
+                                    put("content", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("description", "Details to store when action is 'save'.")
+                                    })
+                                    put("category", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("enum", JSONArray().apply { put("preference"); put("person"); put("place"); put("date"); put("fact"); put("general") })
+                                        put("description", "Category for the memory.")
+                                    })
+                                })
+                                put("required", JSONArray().put("action"))
+                            })
+                        })
+                        // ---- PRODUCTIVITY: SMART ROUTINES ----
+                        put(JSONObject().apply {
+                            put("name", "execute_smart_routine")
+                            put("description",
+                                "Executes one-shot automated smart daily routines: 'good_night' (dims screen brightness to 10%, sets volume to 20%, checks alarms, wishes goodnight), 'focus_mode' (quiets notifications, sets focus timer), 'morning_start' (morning briefing and ready).")
+                            put("parameters", JSONObject().apply {
+                                put("type", "OBJECT")
+                                put("properties", JSONObject().apply {
+                                    put("routine_name", JSONObject().apply {
+                                        put("type", "STRING")
+                                        put("enum", JSONArray().apply { put("good_night"); put("focus_mode"); put("morning_start") })
+                                        put("description", "The routine to execute.")
+                                    })
+                                })
+                                put("required", JSONArray().put("routine_name"))
+                            })
+                        })
                         put(JSONObject().apply {
                             put("name", "shutdown_jarvis")
                             put("description",
@@ -1251,10 +1302,11 @@ class GeminiLiveClient(
 
     /** Send a free-form text turn to JARVIS (e.g. text chat, phone-action confirmations). */
     fun sendText(text: String, turnComplete: Boolean = true) {
-        if (!isSetupComplete || webSocket == null) {
-            Log.i(TAG, "sendText: socket not ready yet (isSetupComplete=$isSetupComplete). Queuing text: '$text'")
+        if (!isSetupComplete || webSocket == null || !isSocketHealthy()) {
+            Log.i(TAG, "sendText: socket not ready or not healthy (isSetupComplete=$isSetupComplete, healthy=${isSocketHealthy()}). Queuing text: '$text'")
             pendingTextQueue.offer(Pair(text, turnComplete))
-            if (webSocket == null && !isManuallyClosed) {
+            if ((webSocket == null || !isSocketHealthy()) && !isManuallyClosed) {
+                disconnect(manual = false)
                 connect()
             }
             return
@@ -1524,6 +1576,9 @@ class GeminiLiveClient(
         idleCheckJob = scope.launch {
             while (isActive) {
                 delay(15_000L)
+                // When audio transport is paused (standby mode), do not cycle background reconnects
+                if (isAudioTransportPaused) continue
+
                 val silenceDuration = System.currentTimeMillis() - lastServerMessageTimeMs
                 if (silenceDuration >= IDLE_SESSION_REFRESH_MS && isSetupComplete) {
                     Log.w(TAG, "No server message for ${silenceDuration / 1000}s — connection likely dead. Forcing reconnect.")
@@ -1558,6 +1613,16 @@ class GeminiLiveClient(
     }
 
     fun isConnected(): Boolean = isSetupComplete
+
+    fun getVoiceName(): String = voiceName
+
+    fun getLastServerMessageTimeMs(): Long = lastServerMessageTimeMs
+
+    fun isSocketHealthy(): Boolean {
+        if (webSocket == null || !isSetupComplete || isManuallyClosed) return false
+        val silence = System.currentTimeMillis() - lastServerMessageTimeMs
+        return silence < 25_000L
+    }
 
     /** Returns the current session resumption handle, if available. */
     fun getSessionHandle(): String? = sessionResumptionHandle

@@ -5,6 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 
+import android.app.Activity
+import android.os.Bundle
+
 class JarvisApplication : Application() {
 
     companion object {
@@ -13,11 +16,39 @@ class JarvisApplication : Application() {
         private const val TAG = "JarvisApplication"
     }
 
+    private var startedActivityCount = 0
+
     override fun onCreate() {
         super.onCreate()
         com.jarvis.assistant.security.SecurityGuard.performSecurityAudit(this)
         com.jarvis.assistant.firebase.FirebaseManager.init(this)
+        com.jarvis.assistant.util.SmartMemoryManager.init(this)
         installCrashHandler()
+        setupActivityLifecycleTracking()
+    }
+
+    private fun setupActivityLifecycleTracking() {
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            override fun onActivityStarted(activity: Activity) {
+                startedActivityCount++
+                if (startedActivityCount == 1) {
+                    com.jarvis.assistant.service.JarvisVoiceService.instance?.setAppForeground(true)
+                }
+            }
+
+            override fun onActivityStopped(activity: Activity) {
+                startedActivityCount = (startedActivityCount - 1).coerceAtLeast(0)
+                if (startedActivityCount == 0) {
+                    com.jarvis.assistant.service.JarvisVoiceService.instance?.setAppForeground(false)
+                }
+            }
+
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+            override fun onActivityResumed(activity: Activity) {}
+            override fun onActivityPaused(activity: Activity) {}
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+            override fun onActivityDestroyed(activity: Activity) {}
+        })
     }
 
     /**

@@ -187,7 +187,8 @@ object ContactCaller {
 
     private fun placeCall(context: Context, target: Contact): CallResult {
         return try {
-            val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:${Uri.encode(target.number)}")).apply {
+            val sanitizedNumber = target.number.filter { it.isDigit() || it == '+' || it == '*' || it == '#' }
+            val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$sanitizedNumber")).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
                 val preferredHandle = SimManager.getPreferredSim(context)

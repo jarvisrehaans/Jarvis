@@ -527,6 +527,7 @@
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
+
             <!-- APPEARANCE & THEME -->
             <TextView
                 android:id="@+id/appearanceThemeSectionLabel"

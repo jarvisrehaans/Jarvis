@@ -264,12 +264,13 @@ class PermissionsActivity : AppCompatActivity() {
                     }
                 } else {
                     prefs.edit().putBoolean("enable_floating_overlay", true).apply()
-                    Toast.makeText(this, "Floating Overlay Orb Enabled!", Toast.LENGTH_SHORT).show()
+                    FloatingOrbService.startService(this)
+                    Toast.makeText(this, "3D Floating Orb Enabled!", Toast.LENGTH_SHORT).show()
                 }
             } else {
                 prefs.edit().putBoolean("enable_floating_overlay", false).apply()
                 FloatingOrbService.stopService(this)
-                Toast.makeText(this, "Floating Overlay Orb Disabled.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "3D Floating Orb Disabled.", Toast.LENGTH_SHORT).show()
             }
         }
 

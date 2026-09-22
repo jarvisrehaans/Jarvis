@@ -1,8 +1,8 @@
 {
-  "versionCode": 141,
-  "versionName": "1.8.5",
+  "versionCode": 142,
+  "versionName": "1.8.6",
   "apkName": "Jarvis-AI-Release.apk",
   "downloadUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
   "apkUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
-  "changelog": "⚡ What's New & Fixed in v1.8.5:\n\n• 🎬 Gemini 3.1+ Live API Video Schema Fix: Fixed critical error (code 1007) by replacing deprecated media_chunks with official realtime_input.video schema, restoring seamless bidirectional voice during screen share.\n\n• 📱 Android 14+ Entire Screen Capture: Configured MediaProjectionConfig.createConfigForDefaultDisplay() so Jarvis sees the full mobile screen across all apps (Instagram, YouTube, etc.) instead of locking to single app.\n\n• 🚀 Persistent App State: Prevented auto-minimizing on screen share start so the app remains open and responsive.\n\n• ⚡ Zero-Starvation 1 FPS Capture Engine: Expanded ImageReader buffer to 4 with throttled 2 FPS frame extraction for zero latency and zero GPU starvation."
+  "changelog": "🚀 JARVIS AI v1.8.6 Mega Update!\n\n✨ KYA NAYA ADD HUA (NEW FEATURES):\n• 🧠 Smart Long-Term Memory: JARVIS ab aapki car parking, favorite cheezein aur personal baatein hamesha yaad rakhta hai aur bina delay turant batata hai.\n• 🌙 One-Shot Smart Routines:\n  - 'Good Night Jarvis': Brightness 10%, Volume 20%, Silent/DND mode, Wi-Fi off aur subah ka alarm verify karega.\n  - 'Focus Mode': Notifications mute, 45-min Pomodoro timer aur lo-fi music start karega.\n• 🎯 Smart Pronoun Tracker: 'Usko call karo' ya 'Message bhejo' bolne par bina baar-baar 'Who?' puche last contact ko call/message karega.\n• 🎙️ Marvel MCU Persona: Tony Stark ke JARVIS jaisa British wit, loyalty aur respectful humor.\n\n🛠️ KYA FIX HUA (BUG FIXES):\n• ⚡ Fast Standby Wake: Background se aane par 5 second ka gap khatam, ab turant 1 sec me greet karega.\n• 🔄 Smooth Navigation: App me pages change karne par voice connection kabhi break nahi hoga.\n• 🔊 Mic Unblock: Bolte hi mic turant unblock ho jata hai, zero word cutting.\n• 🛡️ Zero Hallucinations: Memory se exact saved details hi batayega, random gaane guess nahi karega."
 }

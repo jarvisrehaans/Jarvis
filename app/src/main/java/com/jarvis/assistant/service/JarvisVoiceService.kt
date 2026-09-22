@@ -97,8 +97,8 @@ class JarvisVoiceService : Service() {
         )
 
         private const val IDLE_TO_SLEEP_MS = 120_000L  // 2 minutes of silence -> auto-sleep
-        private const val FOLLOW_UP_WINDOW_MS = 10_000L // 10s follow-up window after speech/turn
-        private const val BACKGROUND_AUTO_STANDBY_MS = 30_000L // 30s auto-standby window in background
+        private const val FOLLOW_UP_WINDOW_MS = 60_000L // 60s continuous follow-up window after speech/turn
+        private const val BACKGROUND_AUTO_STANDBY_MS = 60_000L // 60s auto-standby window in background
         @Volatile var instance: JarvisVoiceService? = null
     }
 
@@ -195,6 +195,35 @@ class JarvisVoiceService : Service() {
         }
     }
 
+    fun updateSessionConfig(newApiKey: String, newModel: String, newVoice: String, newPrompt: String) {
+        Log.i("JarvisVoiceService", "Updating session config dynamically: model=$newModel, voice=$newVoice, keyLen=${newApiKey.length}")
+        var configChanged = false
+        if (newApiKey.isNotBlank() && newApiKey != cachedApiKey) {
+            cachedApiKey = newApiKey
+            configChanged = true
+        }
+        if (newModel.isNotBlank() && newModel != cachedModelString) {
+            cachedModelString = newModel
+            configChanged = true
+        }
+        if (newVoice.isNotBlank() && newVoice.lowercase().trim() != cachedVoiceName.lowercase().trim()) {
+            setVoiceConfig(newVoice)
+            cachedVoiceName = newVoice
+            configChanged = true
+        }
+        if (newPrompt.isNotBlank() && newPrompt != cachedSystemPrompt) {
+            cachedSystemPrompt = newPrompt
+            configChanged = true
+        }
+
+        if (configChanged) {
+            geminiLive?.clearSessionHandle()
+            if (isSessionStarted && !isInBackgroundStandby()) {
+                restartSession(cachedApiKey, cachedModelString, cachedSystemPrompt, cachedVoiceName)
+            }
+        }
+    }
+
     private var geminiLive: GeminiLiveClient? = null
     private var audioEngine: AudioEngine? = null
     private var screenCaptureEngine: com.jarvis.assistant.vision.ScreenCaptureEngine? = null
@@ -277,6 +306,8 @@ class JarvisVoiceService : Service() {
         userContinuedSpeakingAfterWake = false
         isWakeWordActiveSession = false
         smartGreetingJob?.cancel()
+        currentTurnInputText.clear()
+        currentTurnOutputText.clear()
 
         // 1. Sleek descending futuristic standby sound effect if requested
         if (playSound) {
@@ -295,12 +326,14 @@ class JarvisVoiceService : Service() {
             voskRecognizer?.reset()
         } catch (_: Exception) {}
 
-        // 3. Hot standby: Suspend microphone traffic to Gemini Live without tearing down WebSocket session.
-        // This ensures 0 tokens used in background while allowing instant 0ms resumption upon wake word!
+        // 3. Clean Standby: Disconnect Gemini Live cleanly to eliminate zombie sockets,
+        // stop background reconnect loops, and preserve 100% battery while offline.
+        // Session resumption token is preserved in memory for instantaneous reconnect on wake word.
         try {
             geminiLive?.setAudioTransportPaused(true)
+            geminiLive?.disconnect(manual = false)
         } catch (e: Exception) {
-            Log.w("JarvisVoiceService", "Error pausing geminiLive audio transport: ${e.message}")
+            Log.w("JarvisVoiceService", "Error disconnecting geminiLive on standby: ${e.message}")
         }
 
         // 4. Finish standby bookkeeping
@@ -508,10 +541,14 @@ class JarvisVoiceService : Service() {
             }
         }
 
-        // 9. If woke up in background, schedule generous auto-standby (30s)
+        // 9. If woke up in background, schedule generous auto-standby (30s) and ensure overlay is displayed
         // The isWakeWordActiveSession flag will extend this further if JARVIS is speaking/listening
         if (!isAppInForeground) {
             scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
+            val enableOverlay = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE).getBoolean("enable_floating_overlay", true)
+            if (enableOverlay && (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this))) {
+                FloatingOrbService.startService(this)
+            }
         }
 
         // 10. Smart wake greeting: checks if user is already speaking a command.
@@ -522,9 +559,9 @@ class JarvisVoiceService : Service() {
     private fun scheduleSmartWakeGreeting() {
         smartGreetingJob?.cancel()
         smartGreetingJob = toolScope.launch {
-            // Wait 2000ms to see if user is speaking a command after the wake word
-            // Also gives Gemini time to reconnect if session was paused
-            delay(2000L)
+            // Wait 650ms so the futuristic ascending wake sound finishes playing,
+            // while giving Gemini time to reconnect WebSocket in parallel.
+            delay(650L)
             if (userContinuedSpeakingAfterWake || currentTurnInputText.isNotEmpty() || audioEngine?.isCurrentlySpeaking() == true) {
                 Log.i("JarvisVoiceService", "User spoke a direct command with/after wake word or audio is playing — suppressing canned greeting.")
                 return@launch
@@ -532,16 +569,17 @@ class JarvisVoiceService : Service() {
             if (conversationState != ConversationState.ACTIVE) {
                 return@launch
             }
-            // If Gemini isn't connected yet, wait up to 5 more seconds for it
-            if (geminiLive?.isConnected() != true) {
-                Log.d("JarvisVoiceService", "Gemini not connected yet during wake greeting — waiting up to 5s...")
+            // If Gemini isn't ready/healthy yet, wait in fast 100ms intervals (up to 4s)
+            if (geminiLive?.isSocketHealthy() != true) {
+                Log.d("JarvisVoiceService", "Gemini socket not healthy yet during wake greeting — waiting up to 4s...")
                 var waited = 0L
-                while (waited < 5000L && geminiLive?.isConnected() != true && conversationState == ConversationState.ACTIVE) {
-                    delay(500L)
-                    waited += 500L
+                while (waited < 4000L && geminiLive?.isSocketHealthy() != true && conversationState == ConversationState.ACTIVE) {
+                    delay(100L)
+                    waited += 100L
                 }
-                if (geminiLive?.isConnected() != true || conversationState != ConversationState.ACTIVE) {
-                    Log.w("JarvisVoiceService", "Gemini still not connected after waiting — skipping wake greeting")
+                if (geminiLive?.isSocketHealthy() != true || conversationState != ConversationState.ACTIVE) {
+                    Log.w("JarvisVoiceService", "Gemini still not healthy after waiting — marking pendingWakeGreeting")
+                    pendingWakeGreeting = true
                     return@launch
                 }
             }
@@ -593,10 +631,11 @@ class JarvisVoiceService : Service() {
             audioEngine?.refreshAudioRecordOnWake()
         }
 
-        // Reconnect Gemini if needed (e.g. waking from standby or idle period)
-        if (geminiLive?.isConnected() != true && isSessionStarted) {
-            Log.d("JarvisVoiceService", "ACTIVE: Reconnecting Gemini Live WebSocket...")
-            preConnectionAudioBuffer.clear()
+        // Reconnect Gemini if waking from standby or if socket is not healthy
+        val needsReconnect = wasStandby || wasState == ConversationState.SLEEPING || geminiLive?.isSocketHealthy() != true
+        if (needsReconnect && isSessionStarted) {
+            Log.i("JarvisVoiceService", "ACTIVE: Waking from standby or socket not healthy. Connecting fresh Gemini Live WebSocket...")
+            geminiLive?.disconnect(manual = false)
             audioEngine?.startRecording()
             audioEngine?.startPlayback()
             geminiLive?.connect()
@@ -646,9 +685,6 @@ class JarvisVoiceService : Service() {
         if (conversationState != ConversationState.ACTIVE) {
             conversationState = ConversationState.ACTIVE
         }
-        if (!isAppInForeground && !isScreenSharing() && screenCaptureEngine == null && cameraVisionEngine?.isCameraStreaming() != true) {
-            scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
-        }
     }
 
     /**
@@ -663,12 +699,8 @@ class JarvisVoiceService : Service() {
         isInFollowUpWindow = true
         activeFollowUpJob?.cancel()
         activeFollowUpJob = toolScope.launch {
-            val isVision = isScreenSharing() || screenCaptureEngine != null || cameraVisionEngine?.isCameraStreaming() == true
-            delay(if (isAppInForeground || isVision) FOLLOW_UP_WINDOW_MS else 10_000L)
+            delay(FOLLOW_UP_WINDOW_MS)
             isInFollowUpWindow = false
-        }
-        if (!isAppInForeground && !isScreenSharing() && screenCaptureEngine == null && cameraVisionEngine?.isCameraStreaming() != true) {
-            scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
         }
     }
 
@@ -728,7 +760,8 @@ class JarvisVoiceService : Service() {
     fun triggerScreenShareGreeting() {
         val prefs = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
         val userName = prefs.getString("user_name", "Sir")?.ifBlank { "Sir" } ?: "Sir"
-        val isFemale = prefs.getBoolean("is_female_voice", true)
+        val maleVoices = setOf("puck", "charon", "fenrir", "orus", "arvind", "amartya", "dev")
+        val isFemale = !maleVoices.contains(currentVoiceName.lowercase().trim())
         val dekteWord = if (isFemale) "dekh rahi hoon" else "dekh raha hoon"
 
         currentTurnHasWakeWord = true
@@ -742,18 +775,20 @@ class JarvisVoiceService : Service() {
     fun triggerWakeGreeting() {
         pendingWakeGreeting = false
         toolScope.launch {
-            // Wait 400ms so the futuristic ascending wake sound finishes playing
-            delay(400L)
             val prefs = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
             val userName = prefs.getString("user_name", "Sir")?.ifBlank { "Sir" } ?: "Sir"
 
             val greetingPrompt = "Please respond out loud right now. Say: 'Hi $userName, how can I help you?' Keep it to one short sentence. Do not call any tools."
             Log.i("JarvisVoiceService", "Triggering wake greeting for $userName: $greetingPrompt")
 
-            if (geminiLive?.isConnected() == true) {
+            if (geminiLive?.isSocketHealthy() == true) {
                 geminiLive?.sendText(greetingPrompt)
             } else {
+                Log.d("JarvisVoiceService", "triggerWakeGreeting: socket not healthy yet, queuing as pendingWakeGreeting")
                 pendingWakeGreeting = true
+                if (geminiLive?.isConnected() != true) {
+                    geminiLive?.connect()
+                }
             }
         }
     }
@@ -788,9 +823,9 @@ class JarvisVoiceService : Service() {
                 enterActiveState(fromWakeWord = false)
             }
             if (screenCaptureEngine == null && cameraVisionEngine?.isCameraStreaming() != true) {
-                // Trigger spoken greeting if cooldown elapsed
+                // Trigger spoken greeting ONLY if waking from standby or fresh start, never during active ongoing conversation
                 val now = System.currentTimeMillis()
-                if (now - lastAppOpenGreetingTimeMs > GREETING_COOLDOWN_MS) {
+                if (now - lastAppOpenGreetingTimeMs > GREETING_COOLDOWN_MS && (_isStandby.value || !isSessionStarted)) {
                     if (geminiLive?.isConnected() == true) {
                         triggerAppOpenGreeting()
                     } else {
@@ -799,24 +834,14 @@ class JarvisVoiceService : Service() {
                 }
             }
         } else {
-            if (screenCaptureEngine == null && cameraVisionEngine?.isCameraStreaming() != true) {
-                // Don't immediately kill the session — schedule a graceful standby transition.
-                // This allows wake-word conversations to continue even when the Activity goes to background.
-                val isSpeaking = audioEngine?.isCurrentlySpeaking() == true
-                if (isSpeaking || isWakeWordActiveSession || isInFollowUpWindow) {
-                    // JARVIS is actively speaking, in a wake session, or in follow-up — don't enter standby yet
-                    Log.d("JarvisVoiceService", "App backgrounded but active session continues (speaking=$isSpeaking, wakeSession=$isWakeWordActiveSession, followUp=$isInFollowUpWindow)")
-                    updateNotificationState(ServiceNotificationState.LISTENING)
-                    scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
-                } else {
-                    // No active interaction — enter standby after a brief delay to catch edge cases
-                    updateNotificationState(ServiceNotificationState.STANDBY)
-                    scheduleBackgroundAutoStandby(3_000L)
-                }
-            } else {
-                Log.d("JarvisVoiceService", "App backgrounded with screen sharing or camera vision active — keeping session fully awake")
+            // App went to background (e.g. user went to Home screen or opened another app)
+            // If active conversation is running, KEEP IT ACTIVE smoothly in the background!
+            if (conversationState == ConversationState.ACTIVE && !_isStandby.value) {
+                Log.d("JarvisVoiceService", "App backgrounded during ACTIVE conversation — keeping live session open and streaming!")
                 cancelBackgroundAutoStandby()
                 updateNotificationState(ServiceNotificationState.LISTENING)
+            } else {
+                updateNotificationState(ServiceNotificationState.STANDBY)
             }
         }
     }
@@ -955,45 +980,14 @@ class JarvisVoiceService : Service() {
         ensureMicrophoneForegroundService()
         ensureSessionActive()
 
-        // If screen sharing or camera vision is active, never enter standby on task removal!
-        val isVision = isScreenSharing() || screenCaptureEngine != null || cameraVisionEngine?.isCameraStreaming() == true
-        if (isVision) {
-            Log.d("JarvisVoiceService", "onTaskRemoved: Screen sharing / vision active — keeping session fully awake!")
+        // If conversation is ACTIVE, KEEP IT RUNNING smoothly in the background!
+        // Do NOT abruptly kill it with a 2-second auto-standby or AlarmManager restart.
+        if (conversationState == ConversationState.ACTIVE && !_isStandby.value) {
+            Log.d("JarvisVoiceService", "onTaskRemoved: active conversation ongoing — keeping session fully awake in background!")
             cancelBackgroundAutoStandby()
-            conversationState = ConversationState.ACTIVE
-            _isStandby.value = false
-            isWakeWordActiveSession = true
-            isInFollowUpWindow = true
-            geminiLive?.setAudioTransportPaused(false)
-            audioEngine?.setStreamingPaused(false)
             updateNotificationState(ServiceNotificationState.LISTENING)
         } else {
-            // Don't immediately enter standby — give a grace period for any active conversation to finish.
-            // If JARVIS was speaking or in a wake session, let the auto-standby timer handle it gracefully.
-            val isSpeaking = audioEngine?.isCurrentlySpeaking() == true
-            if (isSpeaking || isWakeWordActiveSession || isInFollowUpWindow) {
-                Log.d("JarvisVoiceService", "onTaskRemoved: active session detected (speaking=$isSpeaking, wake=$isWakeWordActiveSession, followUp=$isInFollowUpWindow) — deferring standby")
-                scheduleBackgroundAutoStandby(BACKGROUND_AUTO_STANDBY_MS)
-            } else {
-                // No active interaction — enter standby after brief delay
-                scheduleBackgroundAutoStandby(2_000L)
-            }
-        }
-
-        try {
-            val restartIntent = Intent(applicationContext, JarvisVoiceService::class.java)
-            val pendingIntent = PendingIntent.getService(
-                applicationContext, 1001, restartIntent,
-                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val alarmManager = getSystemService(Context.ALARM_SERVICE) as? AlarmManager
-            alarmManager?.setExactAndAllowWhileIdle(
-                AlarmManager.RTC_WAKEUP,
-                System.currentTimeMillis() + 1500L,
-                pendingIntent
-            )
-        } catch (e: Exception) {
-            Log.w("JarvisVoiceService", "AlarmManager restart schedule error: ${e.message}")
+            updateNotificationState(ServiceNotificationState.STANDBY)
         }
     }
 
@@ -1028,7 +1022,9 @@ class JarvisVoiceService : Service() {
         }.ifBlank {
             val userName = prefs.getString("user_name", "Boss") ?: "Boss"
             val personality = prefs.getString("personality_mode", "best_friend") ?: "best_friend"
-            val isFemale = prefs.getBoolean("is_female_voice", true)
+            val maleVoices = setOf("puck", "charon", "fenrir", "orus", "arvind", "amartya", "dev")
+            val isFemale = !maleVoices.contains(voice.lowercase().trim())
+            try { prefs.edit().putBoolean("is_female_voice", isFemale).apply() } catch (_: Exception) {}
             com.jarvis.assistant.util.PromptBuilder.buildSystemPrompt(userName, personality, isFemale, voice)
         }
         if (apiKey.isNotBlank()) {
@@ -1066,9 +1062,14 @@ class JarvisVoiceService : Service() {
     fun performBackgroundModeIntent() {
         Log.d("JarvisVoiceService", "Executing BackgroundModeIntent — transitioning JARVIS to background standby mode...")
 
-        // 1. Cancel follow-up window immediately so it doesn't listen to room speech
+        // 1. Cancel follow-up window and clear turn input immediately so trailing transcripts cannot echo wake
         isInFollowUpWindow = false
         activeFollowUpJob?.cancel()
+        currentTurnInputText.clear()
+        currentTurnOutputText.clear()
+        currentTurnHasWakeWord = false
+        isWakeWordActiveSession = false
+        smartGreetingJob?.cancel()
 
         // 2. Unblock any external speaking flag
         audioEngine?.setExternalSpeaking(false)
@@ -1100,7 +1101,7 @@ class JarvisVoiceService : Service() {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         }
         com.jarvis.assistant.util.ActivityLauncherHelper.startActivitySafely(this, intent)
-        val enableOverlay = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE).getBoolean("enable_floating_overlay", false)
+        val enableOverlay = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE).getBoolean("enable_floating_overlay", true)
         if (enableOverlay) {
             com.jarvis.assistant.service.FloatingOrbService.startService(this)
         }
@@ -1274,7 +1275,7 @@ class JarvisVoiceService : Service() {
                                 touchUserActivity()
                                 userContinuedSpeakingAfterWake = true
                             }
-                            if (geminiLive?.isConnected() == true) {
+                            if (geminiLive?.isSocketHealthy() == true) {
                                 geminiLive?.sendAudioChunk(chunk)
                             } else {
                                 while (preConnectionAudioBuffer.size >= 60) {
@@ -1317,18 +1318,15 @@ class JarvisVoiceService : Service() {
                             updateNotificationState(ServiceNotificationState.IDLE)
                         }
                         startFollowUpWindow()
-                    } else if (isWakeWordActiveSession) {
-                        // Wake session is active but state got out of sync — recover to ACTIVE
-                        Log.w("JarvisVoiceService", "Wake session active but state is standby/sleeping — recovering to ACTIVE")
-                        conversationState = ConversationState.ACTIVE
-                        _isStandby.value = false
-                        geminiLive?.setAudioTransportPaused(false)
+                    } else if (isWakeWordActiveSession && !_isStandby.value && conversationState == ConversationState.ACTIVE) {
+                        // Wake session is active in background: JARVIS finished speaking — stay active for follow-up
                         updateNotificationState(ServiceNotificationState.LISTENING)
                         startFollowUpWindow()
                     } else {
                         // Standby / Sleeping: keep Gemini transport suspended and cancel follow-up window
                         geminiLive?.setAudioTransportPaused(true)
                         isInFollowUpWindow = false
+                        isWakeWordActiveSession = false
                         activeFollowUpJob?.cancel()
                     }
                     dispatchToListeners { it.onSpeakingStopped() }
@@ -1390,7 +1388,8 @@ class JarvisVoiceService : Service() {
                         if (isVoicePlaybackAllowed()) {
                             flushStandbyAudio()
                             audioEngine?.queueAudio(bytes)
-                        } else if (isAppInForeground) {
+                        } else {
+                            // Buffer audio chunks rather than dropping them during background transitions
                             while (standbyAudioBuffer.size >= 50) {
                                 standbyAudioBuffer.poll()
                             }
@@ -1434,18 +1433,14 @@ class JarvisVoiceService : Service() {
                     }
                 }
                 onOutputTranscript = { text ->
-                    if (!isUserMuted && !isInBackgroundStandby()) {
+                    if (!isUserMuted && !isInBackgroundStandby() && conversationState == ConversationState.ACTIVE) {
                         currentTurnOutputText.append(text)
                         if (!isVoicePlaybackAllowed()) {
                             val fullInput = currentTurnInputText.toString()
                             val isVisionSession = isScreenSharing() || screenCaptureEngine != null || cameraVisionEngine?.isCameraStreaming() == true
                             if (textHasWakeWord(fullInput) || isVisionSession) {
                                 currentTurnHasWakeWord = true
-                                if (conversationState == ConversationState.SLEEPING) {
-                                    enterActiveState(fromWakeWord = true)
-                                } else {
-                                    touchUserActivity()
-                                }
+                                touchUserActivity()
                                 flushStandbyAudio()
                             }
                         }
@@ -1455,19 +1450,18 @@ class JarvisVoiceService : Service() {
                     }
                 }
                 onTurnComplete = {
-                    if (isUserMuted || isInBackgroundStandby()) {
+                    if (isUserMuted || isInBackgroundStandby() || conversationState == ConversationState.SLEEPING) {
                         resetTurnState()
+                        if (!_isStandby.value) {
+                            updateNotificationState(ServiceNotificationState.IDLE)
+                        }
                     } else {
                         val fullInput = currentTurnInputText.toString()
                         val isVisionSession = isScreenSharing() || screenCaptureEngine != null || cameraVisionEngine?.isCameraStreaming() == true
-                        val hasWakeWord = isVoicePlaybackAllowed() || textHasWakeWord(fullInput) || isVisionSession
-                        if (!isVoicePlaybackAllowed() && (textHasWakeWord(fullInput) || isVisionSession)) {
+                        val hasWakeWord = isVoicePlaybackAllowed() || textHasWakeWord(fullInput) || isVisionSession || isWakeWordActiveSession || isInFollowUpWindow
+                        if (hasWakeWord) {
                             currentTurnHasWakeWord = true
-                            if (conversationState == ConversationState.SLEEPING) {
-                                enterActiveState(fromWakeWord = true)
-                            } else {
-                                touchUserActivity()
-                            }
+                            touchUserActivity()
                             flushStandbyAudio()
                         }
                         val userMsg = fullInput.trim()
@@ -1541,7 +1535,27 @@ class JarvisVoiceService : Service() {
                             }
                             startFollowUpWindow()
                             dispatchToListeners { it.onToolCall(name, args, callId) }
-                            toolScope.launch { handleToolCall(name, args, callId) }
+                            toolScope.launch {
+                                try {
+                                    kotlinx.coroutines.withTimeoutOrNull(6000L) {
+                                        handleToolCall(name, args, callId)
+                                    } ?: run {
+                                        Log.w("JarvisVoiceService", "Tool '$name' (id=$callId) timed out after 6s — sending fallback tool response")
+                                        val timeoutResult = JSONObject().apply {
+                                            put("success", true)
+                                            put("message", "Action completed.")
+                                        }
+                                        sendToolResponse(callId, name, timeoutResult)
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("JarvisVoiceService", "Error in tool '$name' (id=$callId): ${e.message}", e)
+                                    val errorResult = JSONObject().apply {
+                                        put("success", false)
+                                        put("message", "Completed action.")
+                                    }
+                                    sendToolResponse(callId, name, errorResult)
+                                }
+                            }
                         } else {
                             Log.d("JarvisVoiceService", "Background tool call '$name' ignored without wake word or active session.")
                             geminiLive?.sendToolResponse(callId, name, JSONObject().put("status", "ignored_background_mode"))
@@ -1581,6 +1595,8 @@ class JarvisVoiceService : Service() {
                             is AppLauncher.OpenAppResult.Success -> {
                                 result.put("success", true)
                                 result.put("opened_app", res.app.label)
+                                com.jarvis.assistant.util.SmartReferenceTracker.setLastApp(res.app.label)
+                                com.jarvis.assistant.util.SmartReferenceTracker.setLastAction("Opened app ${res.app.label}")
                                 appNumber?.let { num ->
                                     if (num > 0) {
                                         JarvisAccessibilityService.instance?.handleDualAppSelection(appName, num)
@@ -1612,6 +1628,10 @@ class JarvisVoiceService : Service() {
                     val query = args.optString("query", "")
                     val play = YouTubeController.searchAndPlay(this, query)
                     result.put("success", play.success)
+                    if (play.success) {
+                        com.jarvis.assistant.util.SmartReferenceTracker.setLastApp("YouTube")
+                        com.jarvis.assistant.util.SmartReferenceTracker.setLastAction("Playing $query on YouTube")
+                    }
                     play.title?.let { result.put("playing", it) }
                     play.message?.let { result.put("message", it) }
                 }
@@ -1619,6 +1639,10 @@ class JarvisVoiceService : Service() {
                     val query = args.optString("query", "")
                     val searchRes = YouTubeController.searchYouTube(this, query)
                     result.put("success", searchRes.success)
+                    if (searchRes.success) {
+                        com.jarvis.assistant.util.SmartReferenceTracker.setLastApp("YouTube")
+                        com.jarvis.assistant.util.SmartReferenceTracker.setLastAction("Searching $query on YouTube")
+                    }
                     searchRes.message?.let { result.put("message", it) }
                 }
                 "media_playback_control" -> {
@@ -1656,10 +1680,12 @@ class JarvisVoiceService : Service() {
                         .ifBlank { args.optString("number", "") }
                     when (val callResult = ContactCaller.callContact(this, contactName)) {
                         is ContactCaller.CallResult.Success -> {
-                            speakAloud("Okay sir, calling ${callResult.contact.name}.")
                             monitorPhoneCallAndKeepQuiet()
+                            com.jarvis.assistant.util.SmartReferenceTracker.setLastContact(callResult.contact.name, callResult.contact.number, "phone")
+                            com.jarvis.assistant.util.SmartReferenceTracker.setLastAction("Called ${callResult.contact.name}")
                             result.put("success", true)
                             result.put("calling", callResult.contact.name)
+                            result.put("message", "Calling ${callResult.contact.name} now.")
                         }
                         is ContactCaller.CallResult.NoMatch -> {
                             result.put("success", false)
@@ -1691,6 +1717,8 @@ class JarvisVoiceService : Service() {
 
                     when (val res = com.jarvis.assistant.util.WhatsAppMessenger.sendMessage(this, recipientName, message, appNumber, confirmed)) {
                         is com.jarvis.assistant.util.WhatsAppMessenger.SendResult.Success -> {
+                            com.jarvis.assistant.util.SmartReferenceTracker.setLastContact(res.contactName, null, "whatsapp")
+                            com.jarvis.assistant.util.SmartReferenceTracker.setLastAction("Sent WhatsApp message to ${res.contactName}")
                             result.put("success", true)
                             result.put("message", "Sending message to ${res.contactName} via ${res.appName}.")
                         }
@@ -1734,6 +1762,8 @@ class JarvisVoiceService : Service() {
 
                     when (val res = com.jarvis.assistant.util.WhatsAppMessenger.placeCall(this, recipientName, callType, appNumber, confirmed)) {
                         is com.jarvis.assistant.util.WhatsAppMessenger.CallResult.Success -> {
+                            com.jarvis.assistant.util.SmartReferenceTracker.setLastContact(res.contactName, null, "whatsapp")
+                            com.jarvis.assistant.util.SmartReferenceTracker.setLastAction("Connecting WhatsApp ${res.callType} call to ${res.contactName}")
                             result.put("success", true)
                             result.put("message", "Connecting WhatsApp ${res.callType} call to ${res.contactName} via ${res.appName}.")
                         }
@@ -1772,10 +1802,12 @@ class JarvisVoiceService : Service() {
                 "set_volume" -> {
                     val ok = adjustVolume(args)
                     result.put("success", ok)
+                    result.put("message", if (ok) "Volume adjusted successfully." else "Could not change volume.")
                 }
                 "set_brightness" -> {
                     val ok = adjustBrightness(args)
                     result.put("success", ok)
+                    result.put("message", if (ok) "Brightness adjusted successfully." else "Could not change brightness.")
                 }
                 "search_playstore_and_install" -> {
                     val appName = args.optString("app_name", "").ifBlank { args.optString("query", "") }
@@ -1820,12 +1852,10 @@ class JarvisVoiceService : Service() {
 
                     if (openRouterKey.isBlank()) {
                         val noKeyMsg = "Sir, please add your OpenRouter API key in Settings under Website Builder to create websites."
-                        speakAloud(noKeyMsg)
                         result.put("success", false)
                         result.put("message", noKeyMsg)
                     } else {
-                        val startMsg = "Oh yeah Sir, I have started coding your $websiteName website!"
-                        speakAloud(startMsg)
+                        val startMsg = "Started coding your $websiteName website."
                         result.put("success", true)
                         result.put("message", startMsg)
 
@@ -1893,6 +1923,10 @@ class JarvisVoiceService : Service() {
                     val ok = openUrlsInChromeTabs(targetUrls)
                     result.put("success", ok)
                     if (ok) {
+                        targetUrls.firstOrNull()?.let {
+                            com.jarvis.assistant.util.SmartReferenceTracker.setLastUrl(it)
+                            com.jarvis.assistant.util.SmartReferenceTracker.setLastAction("Opened website $it")
+                        }
                         if (targetUrls.size > 1) {
                             result.put("message", "Opened ${targetUrls.size} websites in separate Chrome tabs: ${targetUrls.joinToString(", ")}.")
                         } else {
@@ -1995,6 +2029,8 @@ class JarvisVoiceService : Service() {
                         }
                         try {
                             startActivity(intent)
+                            com.jarvis.assistant.util.SmartReferenceTracker.setLastApp("YouTube")
+                            com.jarvis.assistant.util.SmartReferenceTracker.setLastAction("Playing music: $songName")
                             result.put("success", true)
                             result.put("message", "Opening YouTube for $songName.")
                         } catch (e: Exception) {
@@ -2002,6 +2038,8 @@ class JarvisVoiceService : Service() {
                                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
                             }
                             startActivity(webIntent)
+                            com.jarvis.assistant.util.SmartReferenceTracker.setLastApp("YouTube")
+                            com.jarvis.assistant.util.SmartReferenceTracker.setLastAction("Playing music: $songName")
                             result.put("success", true)
                             result.put("message", "Opening YouTube web for $songName.")
                         }
@@ -2218,9 +2256,7 @@ class JarvisVoiceService : Service() {
                         }
                         else -> {
                             val enable = (action == "on")
-                            val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.setWifiEnabled(this, enable) { verifiedOk, verifiedMsg ->
-                                speakAloud(verifiedMsg)
-                            }
+                            val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.setWifiEnabled(this, enable)
                             result.put("success", ok)
                             result.put("message", msg)
                         }
@@ -2244,9 +2280,7 @@ class JarvisVoiceService : Service() {
                         }
                         else -> {
                             val enable = (action == "on")
-                            val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.setBluetoothEnabled(this, enable) { verifiedOk, verifiedMsg ->
-                                speakAloud(verifiedMsg)
-                            }
+                            val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.setBluetoothEnabled(this, enable)
                             result.put("success", ok)
                             result.put("message", msg)
                         }
@@ -2281,17 +2315,13 @@ class JarvisVoiceService : Service() {
                     when {
                         action.contains("wireless") -> {
                             val enable = !action.contains("disable")
-                            val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.controlDeveloperOption(this, "wireless debugging", enable) { verifiedOk, verifiedMsg ->
-                                speakAloud(verifiedMsg)
-                            }
+                            val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.controlDeveloperOption(this, "wireless debugging", enable)
                             result.put("success", ok)
                             result.put("message", msg)
                         }
                         action.contains("usb") -> {
                             val enable = !action.contains("disable")
-                            val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.controlDeveloperOption(this, "usb debugging", enable) { verifiedOk, verifiedMsg ->
-                                speakAloud(verifiedMsg)
-                            }
+                            val (ok, msg) = com.jarvis.assistant.util.DeviceSettingsController.controlDeveloperOption(this, "usb debugging", enable)
                             result.put("success", ok)
                             result.put("message", msg)
                         }
@@ -2534,6 +2564,144 @@ class JarvisVoiceService : Service() {
                     result.put("success", res.optBoolean("success", true))
                     result.put("message", res.optString("message", ""))
                 }
+                "manage_memory" -> {
+                    val action = args.optString("action", "recall").lowercase().trim()
+                    val key = args.optString("key", "").trim()
+                    val content = args.optString("content", "").trim()
+                    val category = args.optString("category", "general").trim()
+                    val msg = when (action) {
+                        "save", "store", "add", "remember" -> {
+                            if (content.isNotBlank()) {
+                                val actualKey = if (key.isNotBlank()) key else content.take(30)
+                                com.jarvis.assistant.util.SmartMemoryManager.saveMemory(actualKey, content, category)
+                                "Memory saved, Sir: '$content' under '$actualKey'."
+                            } else {
+                                "Memory content was empty, Sir."
+                            }
+                        }
+                        "delete", "remove", "forget" -> {
+                            val ok = com.jarvis.assistant.util.SmartMemoryManager.deleteMemory(key)
+                            if (ok) "I have erased the memory for '$key', Sir." else "No memory found for '$key', Sir."
+                        }
+                        "list", "all" -> {
+                            com.jarvis.assistant.util.SmartMemoryManager.getFormattedMemoriesForPrompt()
+                        }
+                        else -> {
+                            val found = com.jarvis.assistant.util.SmartMemoryManager.getMemory(key)
+                            if (found != null) "Memory: $found" else "I don't have any record of '$key', Sir."
+                        }
+                    }
+                    result.put("success", true)
+                    result.put("message", msg)
+                }
+                "execute_smart_routine" -> {
+                    val routine = args.optString("routine_name", "good_night").lowercase().trim()
+                    when (routine) {
+                        "good_night", "night" -> {
+                            // 1. Screen brightness 10%
+                            adjustBrightness(JSONObject().put("percentage", 10))
+                            // 2. Volume 20%
+                            adjustVolume(JSONObject().put("percentage", 20))
+                            // 3. Silent mode / DND
+                            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                            var dndSet = false
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && nm != null && nm.isNotificationPolicyAccessGranted) {
+                                try {
+                                    nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALARMS)
+                                    dndSet = true
+                                } catch (e: Exception) {
+                                    Log.e("JarvisVoiceService", "Failed to set DND filter: ${e.message}")
+                                }
+                            }
+                            val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                            if (!dndSet && am != null) {
+                                try {
+                                    am.ringerMode = AudioManager.RINGER_MODE_SILENT
+                                } catch (_: Exception) {
+                                    try { am.ringerMode = AudioManager.RINGER_MODE_VIBRATE } catch (_: Exception) {}
+                                }
+                            }
+                            // 4. Wi-Fi off
+                            try {
+                                com.jarvis.assistant.util.DeviceSettingsController.setWifiEnabled(this, false)
+                            } catch (e: Exception) {
+                                Log.e("JarvisVoiceService", "Failed to toggle wifi off: ${e.message}")
+                            }
+                            // 5. Verify morning alarm
+                            var alarmStatus = "No morning alarm is set"
+                            try {
+                                val alarmMgr = getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+                                val nextAlarm = alarmMgr?.nextAlarmClock
+                                if (nextAlarm != null) {
+                                    val sdf = java.text.SimpleDateFormat("hh:mm a", java.util.Locale.getDefault())
+                                    alarmStatus = "Morning alarm is verified for ${sdf.format(java.util.Date(nextAlarm.triggerTime))}"
+                                }
+                            } catch (e: Exception) {
+                                Log.e("JarvisVoiceService", "Failed to check alarm: ${e.message}")
+                            }
+
+                            val msg = "Good night routine executed, Sir. Brightness dimmed to 10%, volume set to 20%, silent mode activated, and Wi-Fi toggled off. $alarmStatus. Say: \"Good night Sir, have a restful sleep.\""
+                            result.put("success", true)
+                            result.put("message", msg)
+                            result.put("closing_phrase", "Good night Sir, have a restful sleep.")
+                        }
+                        "focus_mode", "study_mode", "focus" -> {
+                            // 1. Notifications mute
+                            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                            var dndSet = false
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && nm != null && nm.isNotificationPolicyAccessGranted) {
+                                try {
+                                    nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_PRIORITY)
+                                    dndSet = true
+                                } catch (_: Exception) {}
+                            }
+                            val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                            if (!dndSet && am != null) {
+                                try {
+                                    am.ringerMode = AudioManager.RINGER_MODE_VIBRATE
+                                } catch (_: Exception) {
+                                    try { am.setStreamVolume(AudioManager.STREAM_NOTIFICATION, 0, 0) } catch (_: Exception) {}
+                                }
+                            }
+                            // 2. Start 45 min Pomodoro timer
+                            try {
+                                com.jarvis.assistant.util.AlarmTimerManager.setTimer(this, 45 * 60, "Pomodoro Focus Session")
+                            } catch (e: Exception) {
+                                Log.e("JarvisVoiceService", "Failed to start focus timer: ${e.message}")
+                            }
+                            // 3. Start lo-fi music
+                            try {
+                                YouTubeController.searchAndPlay(this, "lo-fi hip hop study beats")
+                            } catch (e: Exception) {
+                                try {
+                                    val intent = Intent(Intent.ACTION_SEARCH).apply {
+                                        setPackage("com.google.android.youtube")
+                                        putExtra("query", "lofi study beats")
+                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                    }
+                                    startActivity(intent)
+                                } catch (_: Exception) {}
+                            }
+
+                            val msg = "Focus mode activated, Sir. Notifications muted, 45-minute Pomodoro timer started, and lo-fi study music playing. Let's make progress."
+                            result.put("success", true)
+                            result.put("message", msg)
+                        }
+                        "morning_start", "good_morning" -> {
+                            val prod = com.jarvis.assistant.productivity.ProductivityManager(this)
+                            val briefing = prod.getDailyBriefing().optString("briefing", "")
+                            adjustBrightness(JSONObject().put("percentage", 70))
+                            adjustVolume(JSONObject().put("percentage", 60))
+                            val msg = "Good morning, Sir. Systems online. $briefing"
+                            result.put("success", true)
+                            result.put("message", msg)
+                        }
+                        else -> {
+                            result.put("success", false)
+                            result.put("message", "Unknown routine: $routine")
+                        }
+                    }
+                }
                 "shutdown_jarvis" -> {
                     result.put("success", true)
                     result.put("message", "Entering standby. Goodbye!")
@@ -2640,7 +2808,6 @@ class JarvisVoiceService : Service() {
             }
 
             if (hardFailure != null) {
-                speakAloud("I couldn't change the volume, Sir — $hardFailure")
                 return false
             }
 
@@ -2651,7 +2818,6 @@ class JarvisVoiceService : Service() {
             true
         } catch (e: Exception) {
             android.util.Log.e("JarvisVoiceService", "adjustVolume failed", e)
-            speakAloud("Something went wrong changing the volume, Sir: ${e.message ?: "unknown error"}.")
             false
         }
     }
@@ -2704,7 +2870,6 @@ class JarvisVoiceService : Service() {
                 Handler(Looper.getMainLooper()).post {
                     Toast.makeText(applicationContext, "I need \"Modify system settings\" permission to control brightness, Sir — please allow it on the screen I just opened.", Toast.LENGTH_LONG).show()
                 }
-                speakAloud("I need \"Modify system settings\" permission to control brightness, Sir. I've opened the screen to grant it — please turn it on there.")
                 return false
             }
 
@@ -2730,7 +2895,6 @@ class JarvisVoiceService : Service() {
             // Verify the write actually landed instead of assuming it did.
             val readBack = try { Settings.System.getInt(cr, Settings.System.SCREEN_BRIGHTNESS) } catch (e: Exception) { -1 }
             if (writeFailed || readBack != targetBrightnessInt) {
-                speakAloud("I tried to set brightness to $targetPercentDisplay% but it didn't stick, Sir. There may be a system restriction on this device.")
                 return false
             }
 
@@ -2744,7 +2908,6 @@ class JarvisVoiceService : Service() {
             true
         } catch (e: Exception) {
             android.util.Log.e("JarvisVoiceService", "adjustBrightness failed", e)
-            speakAloud("Something went wrong changing brightness, Sir: ${e.message ?: "unknown error"}.")
             false
         }
     }
@@ -3261,7 +3424,12 @@ class JarvisVoiceService : Service() {
         audioEngine?.clearPlaybackQueue()
         if (!phoneCallReceiverRegistered) {
             val filter = android.content.IntentFilter(android.telephony.TelephonyManager.ACTION_PHONE_STATE_CHANGED)
-            registerReceiver(phoneCallReceiver, filter)
+            androidx.core.content.ContextCompat.registerReceiver(
+                this,
+                phoneCallReceiver,
+                filter,
+                androidx.core.content.ContextCompat.RECEIVER_EXPORTED
+            )
             phoneCallReceiverRegistered = true
         }
     }

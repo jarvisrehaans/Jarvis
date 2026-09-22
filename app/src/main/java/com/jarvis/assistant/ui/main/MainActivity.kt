@@ -513,7 +513,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
-        voiceService?.setAppForeground(false)
         val enableOverlay = prefs().getBoolean("enable_floating_overlay", false)
         if (enableOverlay && (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.M || android.provider.Settings.canDrawOverlays(this))) {
             com.jarvis.assistant.service.FloatingOrbService.startService(this)
@@ -522,9 +521,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        // Intentionally NOT muting the mic here — JARVIS keeps listening in background
-        // but gates responses until wake word ("jarvis", "hi jarvis", "hello jarvis", "hey jarvis") is spoken
-        voiceService?.setAppForeground(false)
         orbWebView.onPause()
         standbyBarWebView.onPause()
         cyberHudWebView.onPause()
@@ -616,7 +612,7 @@ class MainActivity : AppCompatActivity() {
             val isScreenSharing = voiceService?.isScreenSharing() == true
 
             // If session is already running, sync active tracking variables so we don't falsely trigger restart!
-            if (sessionRunning && activeApiKey.isBlank()) {
+            if (sessionRunning) {
                 activeApiKey = currentKey
                 activeUserName = currentUserName
                 activeVoice = voiceService?.getCurrentVoice()?.ifBlank { currentVoice } ?: currentVoice
@@ -624,19 +620,11 @@ class MainActivity : AppCompatActivity() {
                 activeModelString = currentModel
             }
 
-            val serviceVoiceMismatch = voiceService != null && voiceService?.getCurrentVoice() != currentVoice && voiceService?.getCurrentVoice()?.isNotBlank() == true
-            val settingsChanged = (currentKey != activeApiKey && activeApiKey.isNotBlank()) ||
-                    (currentUserName != activeUserName && activeUserName.isNotBlank()) ||
-                    (currentVoice != activeVoice && activeVoice.isNotBlank()) ||
-                    (currentPersonality != activePersonality && activePersonality.isNotBlank()) ||
-                    (currentModel != activeModelString && activeModelString.isNotBlank()) ||
-                    serviceVoiceMismatch
-
-            if (!sessionRunning || (settingsChanged && !isScreenSharing) || isShutDown) {
+            if (!sessionRunning || isShutDown) {
                 isShutDown = false
                 isMuted = false
                 if (isBound && voiceService != null) {
-                    startVoiceSession(forceRestart = !sessionRunning || isShutDown)
+                    startVoiceSession(forceRestart = isShutDown)
                 } else {
                     startAndBindVoiceService()
                 }
@@ -927,7 +915,7 @@ class MainActivity : AppCompatActivity() {
             obj.put("message", msg.text)
             historyJsonArray.put(obj)
         }
-        val historyJsonStr = historyJsonArray.toString().replace("'", "\\'")
+        val historyJsonStr = historyJsonArray.toString()
 
         val stateIndex = when {
             voiceService?.isCurrentlySpeaking() == true -> 3
@@ -937,7 +925,7 @@ class MainActivity : AppCompatActivity() {
 
         cyberHudWebView.evaluateJavascript("if (window.setApiKeyConfigured) window.setApiKeyConfigured($hasKey);", null)
         cyberHudWebView.evaluateJavascript("if (window.updateBattery) window.updateBattery($pwrInt);", null)
-        cyberHudWebView.evaluateJavascript("if (window.loadChatHistory) window.loadChatHistory('$historyJsonStr');", null)
+        cyberHudWebView.evaluateJavascript("if (window.loadChatHistory) window.loadChatHistory($historyJsonStr);", null)
         cyberHudWebView.evaluateJavascript("if (window.setOrbState) window.setOrbState($stateIndex);", null)
         if (systemStatusBarTopDp > 0) {
             cyberHudWebView.evaluateJavascript("if (window.setTopInset) window.setTopInset($systemStatusBarTopDp);", null)
