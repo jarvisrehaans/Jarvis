@@ -1,8 +1,8 @@
 {
-  "versionCode": 142,
-  "versionName": "1.8.6",
+  "versionCode": 143,
+  "versionName": "1.8.7",
   "apkName": "Jarvis-AI-Release.apk",
   "downloadUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
   "apkUrl": "https://raw.githubusercontent.com/jarvisrehaans/Jarvis/main/Jarvis-AI-Release.apk",
-  "changelog": "🚀 JARVIS AI v1.8.6 Mega Update!\n\n✨ KYA NAYA ADD HUA (NEW FEATURES):\n• 🧠 Smart Long-Term Memory: JARVIS ab aapki car parking, favorite cheezein aur personal baatein hamesha yaad rakhta hai aur bina delay turant batata hai.\n• 🌙 One-Shot Smart Routines:\n  - 'Good Night Jarvis': Brightness 10%, Volume 20%, Silent/DND mode, Wi-Fi off aur subah ka alarm verify karega.\n  - 'Focus Mode': Notifications mute, 45-min Pomodoro timer aur lo-fi music start karega.\n• 🎯 Smart Pronoun Tracker: 'Usko call karo' ya 'Message bhejo' bolne par bina baar-baar 'Who?' puche last contact ko call/message karega.\n• 🎙️ Marvel MCU Persona: Tony Stark ke JARVIS jaisa British wit, loyalty aur respectful humor.\n\n🛠️ KYA FIX HUA (BUG FIXES):\n• ⚡ Fast Standby Wake: Background se aane par 5 second ka gap khatam, ab turant 1 sec me greet karega.\n• 🔄 Smooth Navigation: App me pages change karne par voice connection kabhi break nahi hoga.\n• 🔊 Mic Unblock: Bolte hi mic turant unblock ho jata hai, zero word cutting.\n• 🛡️ Zero Hallucinations: Memory se exact saved details hi batayega, random gaane guess nahi karega."
+  "changelog": "🚀 JARVIS AI v1.8.7 Update!\n\n🛠️ KYA FIX HUA (BUG FIXES):\n• 📱 Zero-App-Interruption Background Mode: 'Go to background' bolne par ab background me chal rahi dusri apps (YouTube, Chrome, WhatsApp) band nahi hongi, JARVIS smoothly silent standby mode me switch karega bina kisi open app ko close kiye.\n• 🎯 Clean Navigation Gesture Separation: 'Go to home' aur 'Go to background' commands ko alag kiya gaya taaki background mode trigger hone par launcher screen par na le jaye."
 }

@@ -890,7 +890,7 @@ class JarvisVoiceService : Service() {
         "send to background", "background me jao", "peeche chala ja", "background mode me jao",
         "peeche jao", "background me chalay jao", "background jao", "go background",
         "background mein jao", "background me ja", "chup ho jao", "chup raho",
-        "go home", "go to home", "go to home screen", "go to sleep", "sleep jarvis",
+        "go to sleep", "sleep jarvis",
         "enter standby", "standby mode", "go to standby", "take a break", "so jao", "chale jao",
         "bye", "goodbye", "bye jarvis", "goodbye jarvis", "see you later", "see ya", "talk to you later",
         "बैकग्राउंड में जाओ", "बैकग्राउंड जाओ", "पीछे जाओ", "चुप हो जाओ", "चुप रहो"
@@ -1078,18 +1078,8 @@ class JarvisVoiceService : Service() {
         audioEngine?.stopPlayback()
         audioEngine?.clearPlaybackQueue()
 
-        // 4. Send app to home screen (minimize)
-        try {
-            val homeIntent = Intent(Intent.ACTION_MAIN).apply {
-                addCategory(Intent.CATEGORY_HOME)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            startActivity(homeIntent)
-        } catch (e: Exception) {
-            Log.w("JarvisVoiceService", "Error navigating to home screen: ${e.message}")
-        }
-
-        // 5. Enter standby mode (plays sleek descending sci-fi chime & starts offline wake word listening)
+        // 4. Enter standby mode (plays sleek descending sci-fi chime & starts offline wake word listening)
+        // Note: Do not close or minimize other running apps — keep the user's active screen undisturbed.
         enterStandby(sayGoodbye = false, playSound = true)
     }
 
